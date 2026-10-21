@@ -6,6 +6,7 @@ on:
 
 jobs:
   test:
+    name: ${{ matrix.afc.name }} / ${{ matrix.firmware.name }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -13,6 +14,11 @@ jobs:
         firmware:
           - { name: klipper, repo: https://github.com/Klipper3d/klipper.git }
           - { name: kalico, repo: https://github.com/KalicoCrew/kalico.git }
+        afc:
+          # What Simple AF's FAQ installs
+          - { name: afc-main, repo: https://github.com/AFCProject/AFC-Klipper-Add-On.git, branch: main }
+          - { name: afc-dev, repo: https://github.com/AFCProject/AFC-Klipper-Add-On.git, branch: DEV }
+          - { name: afc-canvas-fork, repo: https://github.com/suchmememanyskill/AFC-Klipper-Add-On.git, branch: DEV }
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -25,4 +31,6 @@ jobs:
       - name: Run tests
         env:
           KLIPPER_PATH: ${{ runner.temp }}/firmware
+          AFC_REPO: ${{ matrix.afc.repo }}
+          AFC_BRANCH: ${{ matrix.afc.branch }}
         run: ./run-tests.sh -v

@@ -45,21 +45,36 @@ before each one → wait for the toolhead sensor to clear.
 
 ## Setup on a K1 Max with Simple AF
 
-1. Install AFC first, then this repo: `./install.sh -t` links the CFS files into
-   Klipper's extras and copies the example config into your AFC config folder.
-2. Make sure nothing else owns the box: no `box.cfg` include, no `[box]` section,
-   no Creality `box_wrapper`. Simple AF already removes these.
-3. Copy `templates/AFC_CFS_1.cfg` into your AFC config and edit:
+1. Install AFC with the steps in Simple AF's FAQ,
+   [How to install AFC on Simple AF](https://pellcorp.github.io/creality-wiki/faq/#how-to-install-afc-on-simple-af).
+   Clone into `/usr/data`, not `/root`. This works with AFCProject's `main` branch
+   (what that FAQ installs) and with newer AFC `DEV` builds; CI tests both.
+2. Install this repo, also under `/usr/data`:
+   ```sh
+   cd /usr/data
+   git clone https://github.com/mikeinredding/afc-creality-cfs.git
+   cd afc-creality-cfs && ./install.sh -t
+   ```
+   It finds Klipper at `/usr/data/klipper`, links the CFS files into its extras,
+   and copies `AFC_CFS_1.cfg` into `/usr/data/printer_data/config/AFC/`.
+3. Make sure nothing else owns the box: no `box.cfg` include, no `[box]` section,
+   no Creality `box_wrapper`. Simple AF's install (and the
+   [K1 firmware downgrade](https://pellcorp.github.io/creality-wiki/cfs_downgrade/)
+   + factory reset it may require) already removes Creality's CFS software. That's
+   expected: this project replaces it. The CFS box's own firmware is not touched;
+   `AFC_CFS_STATUS` shows its version, and please report it if it differs from what
+   others have tested.
+4. Edit `AFC/AFC_CFS_1.cfg`:
    - `serial:` — `ls /dev/serial/by-id/`, pick the `1a86` device.
    - `pin_tool_start:` — the CFS kit's toolhead filament sensor. Simple AF deletes
      `[filament_switch_sensor filament_sensor_2]` on install; take its `switch_pin`
      from your stock config backup.
    - `cutter_sensor_pin:` — if your kit's cutter switch is on a Klipper pin.
-4. In `AFC_Macro_Vars.cfg`, set `variable_pin_loc_xy` to **your** measured cutter
+5. In `AFC_Macro_Vars.cfg`, set `variable_pin_loc_xy` to **your** measured cutter
    lever position. Measure it by jogging from the console in small steps until the
    lever is pressed; don't copy someone else's numbers. The community has seen it
    move after the kit was re-seated.
-5. In GrumpyScreen's `grumpyscreen.ini` set `[mmu] backend: afc` to get the lane panel.
+6. In GrumpyScreen's `grumpyscreen.ini` set `[mmu] backend: afc` to get the lane panel.
 
 ## Test plan — do these in order, at the printer
 

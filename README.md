@@ -27,7 +27,9 @@ beyond the example config.
 
 ## Install
 
-AFC must already be installed.
+AFC must already be installed. On Simple AF, follow its FAQ:
+[How to install AFC on Simple AF](https://pellcorp.github.io/creality-wiki/faq/#how-to-install-afc-on-simple-af).
+Both AFCProject's `main` branch (what that FAQ installs) and newer `DEV` builds work.
 
 ```sh
 cd ~                       # on a K1 with Simple AF: cd /usr/data

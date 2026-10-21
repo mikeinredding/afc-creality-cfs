@@ -181,3 +181,61 @@ def test_slot_properties():
     lane = _make_lane(index=4)
     assert lane.slot_bits == P.SLOT_BITS[3]
     assert lane.slot_name == "D"
+
+
+class TestSystemTest:
+    """PREP-time lane restore. Must work on AFCProject main (lane.map is a
+    string, no map_to_string) and on newer AFC (map list + map_to_string)."""
+
+    def _unit(self, mask=0b0001, online=True):
+        unit = afcCFS.__new__(afcCFS)
+        unit.name = "CFS_1"
+        unit.logger = MagicMock()
+        unit.afc = MockAFC()
+        unit.afc.current = None
+        unit.online = online
+        unit.material_mask = mask
+        unit.connect = MagicMock(return_value=online)
+        unit.read_material_mask = MagicMock(return_value=mask)
+        unit.lane_loaded = MagicMock()
+        unit.lane_not_ready = MagicMock()
+        unit.lane_tool_loaded = MagicMock()
+        unit.lane_tool_loaded_idle = MagicMock()
+        return unit
+
+    def _lane(self, index=1, with_map_to_string=True):
+        lane = MagicMock()
+        lane.name = "lane{}".format(index)
+        lane.index = index
+        lane.tool_loaded = False
+        lane.map = "T0" if not with_map_to_string else ["T0"]
+        if with_map_to_string:
+            lane.map_to_string = MagicMock(return_value="T0")
+        else:
+            del lane.map_to_string
+        return lane
+
+    @pytest.mark.parametrize("with_map_to_string", [True, False])
+    def test_present_slot_marks_loaded(self, with_map_to_string):
+        unit = self._unit(mask=0b0001)
+        lane = self._lane(1, with_map_to_string)
+        assert unit.system_Test(lane, 0, True, False) is True
+        assert lane.prep_state is True and lane._load_state is True
+        unit.lane_loaded.assert_called_once_with(lane)
+        lane.set_afc_prep_done.assert_called_once()
+        assert "lane1 tool cmd: T0  FILAMENT PRESENT" in unit.logger.info.call_args.args[0]
+
+    def test_empty_slot_marks_not_ready(self):
+        unit = self._unit(mask=0b0001)
+        lane = self._lane(2, with_map_to_string=False)
+        unit.system_Test(lane, 0, False, False)
+        assert lane.prep_state is False
+        unit.lane_not_ready.assert_called_once_with(lane)
+
+    def test_offline_box_reports_not_responding(self):
+        unit = self._unit(online=False)
+        unit.material_mask = None
+        lane = self._lane(1)
+        assert unit.system_Test(lane, 0, False, False) is False
+        assert "NOT RESPONDING" in unit.logger.info.call_args.args[0]
+        lane.set_afc_prep_done.assert_called_once()
