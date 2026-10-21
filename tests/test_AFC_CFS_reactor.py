@@ -1,0 +1,51 @@
+"""
+Runs the CFS unit and lanes against a simulated CFS box on Klipper's real
+reactor (see tests/cfs_reactor_harness.py). Each scenario runs in its own
+subprocess because conftest mocks chelper and the real reactor needs it.
+
+Skipped unless KLIPPER_PATH points at a Klipper (or Kalico) checkout, e.g.
+    KLIPPER_PATH=~/klipper ./run-tests.sh --unit
+"""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+
+import pytest
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+HARNESS = os.path.join(HERE, "cfs_reactor_harness.py")
+KLIPPER_PATH = os.environ.get("KLIPPER_PATH", "")
+
+pytestmark = pytest.mark.skipif(
+    not os.path.isfile(os.path.join(KLIPPER_PATH, "klippy", "reactor.py")),
+    reason="KLIPPER_PATH not set to a Klipper checkout",
+)
+
+SCENARIOS = [
+    "connect_addressed",
+    "connect_discovery",
+    "retry_and_offline",
+    "garbage_resync",
+    "poll_presence",
+    "load_unload",
+    "slot_switch",
+    "stall_fails_cleanly",
+    "empty_slot",
+    "offline",
+]
+
+
+@pytest.mark.parametrize("scenario", SCENARIOS)
+def test_cfs_on_real_reactor(scenario):
+    env = dict(os.environ)
+    env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
+    proc = subprocess.run([sys.executable, HARNESS, scenario], capture_output=True,
+                          text=True, timeout=120, env=env)
+    assert proc.returncode == 0, proc.stderr
+    result = json.loads(proc.stdout.strip().splitlines()[-1])
+    assert "exception" not in result, result["exception"]
+    failed = {k: v for k, v in result["checks"].items() if not v}
+    assert not failed, "failed checks {} (info: {})".format(list(failed), result["info"])

@@ -1,0 +1,28 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        firmware:
+          - { name: klipper, repo: https://github.com/Klipper3d/klipper.git }
+          - { name: kalico, repo: https://github.com/KalicoCrew/kalico.git }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies
+        run: pip install pytest greenlet cffi Jinja2
+      - name: Clone ${{ matrix.firmware.name }}
+        run: git clone --depth 1 ${{ matrix.firmware.repo }} "$RUNNER_TEMP/firmware"
+      - name: Run tests
+        env:
+          KLIPPER_PATH: ${{ runner.temp }}/firmware
+        run: ./run-tests.sh -v
