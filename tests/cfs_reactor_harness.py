@@ -22,11 +22,24 @@ import traceback
 from unittest.mock import MagicMock
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-KLIPPY = os.path.join(os.environ["KLIPPER_PATH"], "klippy")
+FIRMWARE = os.environ["KLIPPER_PATH"]
+KLIPPY = os.path.join(FIRMWARE, "klippy")
 sys.path.insert(0, REPO)
-sys.path.append(KLIPPY)
 
-import reactor as kreactor  # noqa: E402  real Klipper reactor + chelper
+# Real reactor + chelper. Klipper keeps klippy/ as a flat module directory;
+# Kalico makes it a package (klippy.reactor with relative imports).
+if os.path.isfile(os.path.join(KLIPPY, "__init__.py")):
+    # Register klippy as a bare package so its __init__ (which imports the
+    # whole printer stack, pyserial included) doesn't run; we only need
+    # klippy.reactor and its relative imports (chelper, util).
+    import types  # noqa: E402
+    pkg = types.ModuleType("klippy")
+    pkg.__path__ = [KLIPPY]
+    sys.modules["klippy"] = pkg
+    from klippy import reactor as kreactor  # noqa: E402
+else:
+    sys.path.append(KLIPPY)
+    import reactor as kreactor  # noqa: E402
 import tests.conftest  # noqa: E402,F401  installs Klipper mocks for everything else
 from tests.conftest import MockAFC  # noqa: E402
 from tests.cfs_sim import FakeCFS  # noqa: E402
