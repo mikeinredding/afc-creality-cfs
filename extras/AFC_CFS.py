@@ -433,6 +433,21 @@ class CFSTransport:
         return self._mutex.test()
 
 
+def set_lane_sensors(lane, present: bool, connected_mask) -> None:
+    """
+    Map the box's sensors onto AFC's lane model for a virtual hub:
+      - prep / loaded_to_hub: a spool is in the slot (the box keeps it
+        staged, so it is always ready to load)
+      - load sensor (_load_state): this slot's filament is past the merge,
+        in the shared tube. AFC's virtual hub reads "occupied" when any
+        lane's load sensor is set, so it must not follow spool presence.
+    """
+    lane.prep_state = present
+    lane.loaded_to_hub = present
+    lane._load_state = bool(connected_mask is not None
+                            and connected_mask & P.slot_bit(lane.index))
+
+
 class afcCFS(afcUnit):
     """
     One Creality CFS box. Lanes are [AFC_CFS_lane laneN] with unit: <name>:1..4
@@ -818,6 +833,9 @@ class afcCFS(afcUnit):
             mask = self.read_material_mask()
             if mask is not None:
                 self._mirror_presence(mask)
+            connected = self.read_connected_mask()
+            if connected is not None:
+                self._mirror_connections(connected)
             self.read_buffer_state()
         except Exception:
             self.logger.debug("CFS {}: poll failed\n{}".format(self.name, traceback.format_exc()))
@@ -841,6 +859,11 @@ class afcCFS(afcUnit):
             except ValueError:
                 pass
 
+    def _mirror_connections(self, mask: int) -> None:
+        for lane in self.lanes.values():
+            if hasattr(lane, "cfs_update_presence"):
+                lane._load_state = bool(mask & P.slot_bit(lane.index))
+
     # -- AFC unit hooks ----------------------------------------------------
 
     def system_Test(self, cur_lane: AFCLane, delay: float, assignTcmd: bool,
@@ -853,6 +876,8 @@ class afcCFS(afcUnit):
         self._boot_wait_done = True
         if self.online and self.material_mask is None:
             self.read_material_mask()
+        if self.online and self.connected_mask is None:
+            self.read_connected_mask()
 
         if not self.online:
             # Unknown, not empty: the first poll after the box answers syncs
@@ -896,7 +921,7 @@ class afcCFS(afcUnit):
         """Set a lane's presence and LEDs from the box's sensor; returns a
         PREP-style status message."""
         cur_lane.prep_state = present
-        cur_lane._load_state = present
+        set_lane_sensors(cur_lane, present, self.connected_mask)
         if not present:
             self.lane_not_ready(cur_lane)
             return "EMPTY READY FOR SPOOL"
@@ -943,6 +968,8 @@ class afcCFS(afcUnit):
         toolhead_clear = not lane.get_toolhead_pre_sensor_state()
         seconds = round(self.reactor.monotonic() - started, 2)
         ok = toolhead_clear and done
+        if done:
+            lane._load_state = False     # out of the shared path
         detail = "retrude stages {}, box {}, toolhead sensor {}".format(
             "/".join(replies), "finished" if done else "did not confirm",
             "clear" if toolhead_clear else "STILL TRIGGERED")

@@ -74,7 +74,7 @@ class TestPresence:
         lane = _make_lane()
         lane._cfs_present_last = None
         lane.cfs_update_presence(True)
-        assert lane.prep_state is True and lane._load_state is True
+        assert lane.prep_state is True and lane.loaded_to_hub is True
         lane.set_loaded.assert_not_called()
 
     def test_unchanged_state_is_ignored(self):
@@ -240,6 +240,8 @@ class TestSystemTest:
         unit.material_mask = mask
         unit.connect = MagicMock(return_value=online)
         unit.read_material_mask = MagicMock(return_value=mask)
+        unit.connected_mask = 0
+        unit.read_connected_mask = MagicMock(return_value=0)
         unit.lane_loaded = MagicMock()
         unit.lane_not_ready = MagicMock()
         unit.lane_tool_loaded = MagicMock()
@@ -266,10 +268,21 @@ class TestSystemTest:
         unit = self._unit(mask=0b0001)
         lane = self._lane(1, with_map_to_string)
         assert unit.system_Test(lane, 0, True, False) is True
-        assert lane.prep_state is True and lane._load_state is True
+        assert lane.prep_state is True and lane.loaded_to_hub is True
+        # Present but not in the shared path: AFC's virtual hub must read clear
+        assert lane._load_state is False
         unit.lane_loaded.assert_called_once_with(lane)
         lane.set_afc_prep_done.assert_called_once()
         assert "lane1 tool cmd: T0  FILAMENT PRESENT" in unit.logger.info.call_args.args[0]
+
+    def test_connected_slot_sets_load_sensor(self):
+        unit = self._unit(mask=0b0011)
+        unit.connected_mask = 0b0010
+        lane1, lane2 = self._lane(1), self._lane(2)
+        unit.system_Test(lane1, 0, False, False)
+        unit.system_Test(lane2, 0, False, False)
+        assert lane1._load_state is False and lane2._load_state is True
+        assert lane1.loaded_to_hub is True and lane2.loaded_to_hub is True
 
     def test_empty_slot_marks_not_ready(self):
         unit = self._unit(mask=0b0001)
@@ -334,3 +347,53 @@ class TestFirstReadingAfterOfflinePrep:
         lane.cfs_update_presence(False)
         lane.unit_obj.on_filament_remove.assert_not_called()
         lane.set_unloaded.assert_called_once()
+
+
+class TestVirtualHubGate:
+    """AFC's TOOL_LOAD only proceeds when `lane.load_state and not hub.state`.
+    With switch_pin: virtual, hub.state is any(lane.raw_load_state) and
+    lane.load_state is lane.loaded_to_hub. Check that with AFC's real code."""
+
+    def _hub(self, lanes):
+        from extras.AFC_hub import afc_hub
+        hub = afc_hub.__new__(afc_hub)
+        hub.switch_pin = "virtual"
+        hub._state = False
+        hub.lanes = {l.name: l for l in lanes}
+        return hub
+
+    def _real_lane(self, index, hub):
+        from extras.AFC_CFS import set_lane_sensors
+        lane = AFCCFSLane.__new__(AFCCFSLane)
+        lane.name = "lane{}".format(index)
+        lane.index = index
+        lane.hub_obj = hub
+        return lane, set_lane_sensors
+
+    def test_all_spools_present_hub_clear_and_lane_ready(self):
+        hub = self._hub([])
+        lanes = []
+        for i in (1, 2, 3, 4):
+            lane, set_sensors = self._real_lane(i, hub)
+            set_sensors(lane, True, 0b0000)
+            lanes.append(lane)
+        hub.lanes = {l.name: l for l in lanes}
+        assert hub.state is False
+        assert all(l.load_state for l in lanes)
+
+    def test_connected_slot_occupies_hub(self):
+        hub = self._hub([])
+        lanes = []
+        for i in (1, 2):
+            lane, set_sensors = self._real_lane(i, hub)
+            set_sensors(lane, True, 0b0001)
+            lanes.append(lane)
+        hub.lanes = {l.name: l for l in lanes}
+        assert hub.state is True
+
+    def test_empty_slot_not_ready(self):
+        hub = self._hub([])
+        lane, set_sensors = self._real_lane(1, hub)
+        set_sensors(lane, False, 0)
+        hub.lanes = {lane.name: lane}
+        assert lane.load_state is False

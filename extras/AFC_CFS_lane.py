@@ -162,7 +162,7 @@ class AFCCFSLane(AFCLane):
         previous = self._cfs_present_last
         self._cfs_present_last = present
         self.prep_state = present
-        self._load_state = present
+        self.loaded_to_hub = present
 
         if not getattr(self, "_afc_prep_done", False):
             self.afc.save_vars()
@@ -389,7 +389,7 @@ class AFCCFSLane(AFCLane):
         if remaining > 0:
             self.afc.move_e_pos(remaining, self.extruder_obj.tool_load_speed,
                                 "CFS tool_stn", wait_tool=True)
-        self.loaded_to_hub = True
+        self._load_state = True          # our filament now occupies the shared path
         self._mark_tool_state(loaded=True)
         self._trace("load_end", ok=True, detail=detail, attempts=attempts_used,
                     tool_stn_push=round(max(remaining, 0), 2),
@@ -530,7 +530,7 @@ class AFCCFSLane(AFCLane):
         if not ok:
             self._fail("unload failed: {}".format(detail))
             return
-        self.loaded_to_hub = False
+        self._load_state = False         # reeled back past the merge
         self._mark_tool_state(loaded=False)
 
     def _mark_tool_state(self, loaded: bool) -> None:
