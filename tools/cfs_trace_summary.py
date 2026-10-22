@@ -187,7 +187,8 @@ def summarize(events, out=sys.stdout):
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("trace", help="path to the trace file")
-    ap.add_argument("--since", help='only events after "YYYY-MM-DD HH:MM"')
+    ap.add_argument("--since", help='only events after "YYYY-MM-DD HH:MM", or after the '
+                    'last AFC_CFS_TRACE MARK containing this text')
     ap.add_argument("--events", help="print these event types raw, comma separated")
     args = ap.parse_args(argv)
 
@@ -195,7 +196,15 @@ def main(argv=None):
     if not files:
         ap.error("no trace at {}".format(args.trace))
     if args.since:
-        cutoff = dt.datetime.strptime(args.since, "%Y-%m-%d %H:%M").timestamp()
+        try:
+            cutoff = dt.datetime.strptime(args.since, "%Y-%m-%d %H:%M").timestamp()
+        except ValueError:
+            marks = [e for e in events if e["ev"] == "mark"
+                     and args.since.lower() in str(e.get("text", "")).lower()]
+            if not marks:
+                ap.error('--since: not a "YYYY-MM-DD HH:MM" time and no mark contains "{}"'
+                         .format(args.since))
+            cutoff = marks[-1].get("ts", 0)
         events = [e for e in events if e.get("ts", 0) >= cutoff]
     if args.events:
         wanted = set(args.events.split(","))
