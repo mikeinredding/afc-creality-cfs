@@ -22,6 +22,8 @@ beyond the example config.
 - `[AFC_CFS_lane <name>]` — one slot (A–D): full tool load and cut + unload sequences
 - Lanes show up in Mainsail, Fluidd and GrumpyScreen's AFC panel like any other AFC lane
 - `AFC_CFS_STATUS`, `AFC_CFS_RECONNECT`, `AFC_CFS_RAW` for bring-up and debugging
+- Optional trace recording of box traffic and every load/unload with timings, plus
+  `tools/cfs_trace_summary.py` to digest it (see [Recording a trace](docs/CFS.md#recording-a-trace))
 - Serial I/O never blocks Klipper (an earlier community attempt tripped false heater
   shutdowns that way)
 

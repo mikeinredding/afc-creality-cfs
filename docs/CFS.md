@@ -100,8 +100,46 @@ protocol directly.
 
 If a load fails, the lane goes to error and AFC pauses. `AFC_CFS_STATUS` shows the
 box state; the lane's `cfs_last_load` status field records stage 5 polls, the last
-measuring-wheel reading and the stage 6/7 replies. Set `protocol_debug: True` to log
-every frame.
+measuring-wheel reading and the stage 6/7 replies.
+
+Before each step, drop a marker in the trace so it's easy to find afterwards:
+`AFC_CFS_TRACE UNIT=CFS_1 MARK="step 4 load A"`.
+
+## Recording a trace
+
+With `trace_file` set (the template turns it on), the unit records a JSON-lines file
+of everything it does with the box:
+
+- every frame sent and received, with reply latency, plus timeouts, CRC errors and
+  replies nobody asked for
+- connection changes and the box's firmware version
+- each load: start, every attempt, stage 5 time / polls / measuring-wheel reading,
+  stage 6/7 replies, end result and total time
+- each unload: cut (and whether the blade released), every retract step with the
+  box's reply and toolhead sensor, end result and time
+- spool insert/remove, runouts, failures, print start/stop with the file name
+- the effective settings, recorded at every Klipper start
+
+Idle status polls are left out unless `trace_polls: True`, so the file only grows
+when something happens. It rotates at `trace_max_size` (5 MB) keeping
+`trace_backups` old copies. Writes happen on a background thread, so tracing doesn't
+affect Klipper's timing.
+
+`AFC_CFS_TRACE UNIT=CFS_1` reports where it's recording; `ENABLE=0` / `ENABLE=1`
+pauses and resumes; `MARK="text"` adds a note. `AFC_CFS_STATUS` shows it too.
+
+To look at it, download `cfs_trace.jsonl` from the Logs section of Mainsail/Fluidd,
+or summarize it on the printer:
+
+```sh
+python3 /usr/data/afc-creality-cfs/tools/cfs_trace_summary.py /usr/data/printer_data/logs/cfs_trace.jsonl
+python3 .../cfs_trace_summary.py cfs_trace.jsonl --since "2026-10-22 19:00"
+python3 .../cfs_trace_summary.py cfs_trace.jsonl --events fail,load_end   # raw events
+```
+
+The summary gives load/unload success per slot, timings, stage 7 replies, retries,
+reply latency per command, non-OK box replies, timeouts, and a timeline of failures
+and markers. When reporting a problem, attach the trace file(s) and `klippy.log`.
 
 ## Known unknowns
 

@@ -23,5 +23,6 @@ for f in "$ROOT"/extras/*.py; do ln -sf "$f" "$AFC_PATH/extras/$(basename "$f")"
 for f in "$ROOT"/tests/*.py; do ln -sf "$f" "$AFC_PATH/tests/$(basename "$f")"; done
 
 cd "$AFC_PATH"
-python3 -m pytest -q -p no:cacheprovider \
-  tests/test_AFC_CFS_protocol.py tests/test_AFC_CFS_lane.py tests/test_AFC_CFS_reactor.py "$@"
+tests=()
+for f in "$ROOT"/tests/test_AFC_CFS_*.py; do tests+=("tests/$(basename "$f")"); done
+python3 -m pytest -q -p no:cacheprovider "${tests[@]}" "$@"

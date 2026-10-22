@@ -396,6 +396,64 @@ def sc_offline(r):
     }, {"failures": rig.failures, "unused_path": path}
 
 
+def sc_trace_recording(r):
+    import importlib.util
+    import tempfile
+    tool_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "tools",
+                             "cfs_trace_summary.py")
+    spec = importlib.util.spec_from_file_location("cfs_trace_summary", tool_path)
+    summary = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(summary)
+
+    tmp = tempfile.mkdtemp(prefix="cfs-trace-")
+    path = os.path.join(tmp, "logs", "cfs_trace.jsonl")
+    sim = FakeCFS(material_mask=0b0011)
+    rig = Rig(r, sim, trace_file=path)
+    lane = rig.lane(1)
+    rig.lane(2)
+    dog = Watchdog(r)
+    rig.unit.connect()
+    rig.unit._cfs_handle_ready()           # idle polling, should stay out of the trace
+    wait(r, 0.7)
+    sim.material_mask = 0b0111             # a spool goes in: recorded as presence
+    wait(r, 0.5)
+    rig.unit._cfs_handle_disconnect()       # stops polling and flushes the trace
+    rig.unit.trace.start()                  # reopen to record the tool change
+    _load(rig, lane)
+    _unload(rig, lane)
+    dog.stop()
+    rig.unit.trace.stop()
+    sim.close()
+
+    events, files, bad = summary.load(path)
+    kinds = [e["ev"] for e in events]
+    load_end = [e for e in events if e["ev"] == "load_end"]
+    polled_fns = {e["fn"] for e in events if e["ev"] == "tx"} & {"GET_BUFFER_STATE"}
+    import io
+    buf = io.StringIO()
+    summary.summarize(events, out=buf)
+    text = buf.getvalue()
+    return {
+        "file_written": len(files) == 1 and bad == 0 and len(events) > 20,
+        "has_settings": any(e["ev"] == "trace_start" and e.get("settings") for e in events),
+        "online_with_version": any(e["ev"] == "online" and e.get("version") == "SIMCFS-0001"
+                                   for e in events),
+        "idle_polls_not_traced": not polled_fns,
+        "presence_recorded": any(e["ev"] == "presence" and e.get("slots") == "ABC"
+                                 for e in events),
+        "load_events": all(k in kinds for k in ("load_start", "stage5_result", "handoff",
+                                                 "load_end")),
+        "load_timed": bool(load_end) and load_end[0].get("ok") and load_end[0]["seconds"] > 0,
+        "unload_events": all(k in kinds for k in ("unload_start", "cut", "retract_step",
+                                                   "unload_end")),
+        "replies_have_latency": all("ms" in e for e in events if e["ev"] == "rx"),
+        "summary_reports_load": "Loads: 1 ok, 0 failed" in text and "Unloads: 1 ok" in text,
+        "summary_reports_latency": "EXTRUDE_PROCESS" in text and "p95" in text,
+        "reactor_never_stalled": dog.max_gap < 0.05,
+    }, {"events": len(events), "max_gap_ms": round(dog.max_gap * 1000, 2),
+        "summary": text}
+
+
 SCENARIOS = {name[3:]: fn for name, fn in globals().items() if name.startswith("sc_")}
 
 

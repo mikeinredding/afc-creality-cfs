@@ -18,8 +18,12 @@
 from __future__ import annotations
 
 import errno
+import json
 import os
+import queue
 import termios
+import threading
+import time
 import traceback
 from typing import TYPE_CHECKING, Any, Dict, Optional
 
@@ -59,6 +63,119 @@ if TYPE_CHECKING:
     from extras.AFC_lane import AFCLane
 
 
+class CFSTrace:
+    """
+    Optional JSON-lines trace of everything the unit does with the box: every
+    frame sent and received (with reply latency), timeouts, connection
+    changes, and load/unload/cut events with timings. Used to debug and tune
+    the integration from real prints (summarize with tools/cfs_trace_summary.py).
+
+    Writes happen on a background thread so a slow SD/eMMC write can never
+    stall Klipper's reactor; the reactor side only appends to a bounded queue.
+    The file rotates at max_bytes, keeping `backups` older copies.
+    """
+
+    QUEUE_SIZE = 20000
+
+    def __init__(self, path: Optional[str], max_bytes: int, backups: int,
+                 logger: Any) -> None:
+        self.path = os.path.expanduser(path) if path else None
+        self.max_bytes = max_bytes
+        self.backups = backups
+        self.logger = logger
+        self.enabled = False
+        self.dropped = 0
+        self.written = 0
+        self.last_error: Optional[str] = None
+        self._queue: "queue.Queue[Optional[str]]" = queue.Queue(maxsize=self.QUEUE_SIZE)
+        self._thread: Optional[threading.Thread] = None
+        self._t0 = time.monotonic()
+
+    def start(self) -> bool:
+        if not self.path:
+            return False
+        if self._thread is None or not self._thread.is_alive():
+            self._thread = threading.Thread(target=self._run, name="cfs-trace", daemon=True)
+            self._thread.start()
+        self.enabled = True
+        return True
+
+    def stop(self, timeout: float = 2.0) -> None:
+        self.enabled = False
+        if self._thread is not None and self._thread.is_alive():
+            try:
+                self._queue.put(None, timeout=timeout)
+            except queue.Full:
+                pass
+            self._thread.join(timeout)
+        self._thread = None
+
+    def event(self, ev: str, **fields: Any) -> None:
+        """Record one event. Cheap and non-blocking; safe from the reactor."""
+        if not self.enabled:
+            return
+        now = time.time()
+        record = {"ts": round(now, 4), "t": round(time.monotonic() - self._t0, 4), "ev": ev}
+        record.update(fields)
+        try:
+            line = json.dumps(record, separators=(",", ":"), default=str)
+            self._queue.put_nowait(line)
+        except queue.Full:
+            self.dropped += 1
+        except (TypeError, ValueError):
+            self.dropped += 1
+
+    # -- writer thread ----------------------------------------------------
+
+    def _open(self):
+        directory = os.path.dirname(self.path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        handle = open(self.path, "a", encoding="utf-8")
+        self._size = os.path.getsize(self.path)
+        return handle
+
+    def _rotate(self, handle):
+        handle.close()
+        for i in range(self.backups, 0, -1):
+            src = self.path if i == 1 else "{}.{}".format(self.path, i - 1)
+            dst = "{}.{}".format(self.path, i)
+            if os.path.exists(src):
+                os.replace(src, dst)
+        if self.backups == 0 and os.path.exists(self.path):
+            os.remove(self.path)
+        return self._open()
+
+    def _run(self) -> None:
+        try:
+            handle = self._open()
+        except OSError as e:
+            self.last_error = "cannot open trace file: {}".format(e)
+            self.enabled = False
+            return
+        try:
+            while True:
+                line = self._queue.get()
+                if line is None:
+                    break
+                handle.write(line + "\n")
+                self.written += 1
+                self._size += len(line.encode("utf-8")) + 1
+                if self._size >= self.max_bytes:
+                    handle = self._rotate(handle)
+                elif self._queue.empty():
+                    handle.flush()
+        except OSError as e:
+            self.last_error = "trace write failed: {}".format(e)
+            self.enabled = False
+        finally:
+            try:
+                handle.flush()
+                handle.close()
+            except Exception:
+                pass
+
+
 class CFSTransport:
     """
     Reactor-safe request/response link to a CFS box.
@@ -87,6 +204,14 @@ class CFSTransport:
         self.tx_count = 0
         self.rx_count = 0
         self.timeouts = 0
+        self.trace: Optional[CFSTrace] = None
+        # When True, ordinary frames aren't traced (idle status polls)
+        self.quiet = False
+        self._traced_crc_errors = 0
+
+    def _trace(self, ev: str, **fields: Any) -> None:
+        if self.trace is not None:
+            self.trace.event(ev, **fields)
 
     # -- port management ---------------------------------------------------
 
@@ -105,6 +230,7 @@ class CFSTransport:
             fd = os.open(self.path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
         except OSError as e:
             self.last_error = "open {} failed: {}".format(self.path, e)
+            self._trace("port_error", error=self.last_error)
             return False
         try:
             attrs = termios.tcgetattr(fd)
@@ -129,6 +255,7 @@ class CFSTransport:
         self._parser.reset()
         self._fd_handle = self.reactor.register_fd(fd, self._on_readable)
         self.last_error = None
+        self._trace("port_open", path=self.path, baud=self.baud)
         return True
 
     def close(self) -> None:
@@ -163,6 +290,7 @@ class CFSTransport:
                 # Device went away (USB unplugged, box powered off)
                 self.last_error = "read error: {}".format(e)
                 self.logger.warning("{}: serial {}".format(self.name, self.last_error))
+                self._trace("port_error", error=self.last_error)
                 self.close()
                 return
             if not chunk:
@@ -178,9 +306,20 @@ class CFSTransport:
             pending = self._pending
             if pending is not None and frame.fn == pending["fn"] \
                     and not pending["completion"].test():
+                if not self.quiet:
+                    self._trace("rx", fn=P.fn_name(frame.fn), addr=frame.addr,
+                                st=frame.status_name(), data=frame.data.hex(),
+                                ms=round((self.reactor.monotonic() - pending["sent"]) * 1000, 1))
                 pending["completion"].complete(frame)
-            elif self.debug:
-                self.logger.debug("{}: unsolicited frame {}".format(self.name, frame.hex()))
+            else:
+                self._trace("rx_unsolicited", fn=P.fn_name(frame.fn), addr=frame.addr,
+                            st=frame.status_name(), data=frame.data.hex())
+                if self.debug:
+                    self.logger.debug("{}: unsolicited frame {}".format(self.name, frame.hex()))
+        if self._parser.crc_errors != self._traced_crc_errors:
+            self._trace("crc_error", total=self._parser.crc_errors,
+                        new=self._parser.crc_errors - self._traced_crc_errors)
+            self._traced_crc_errors = self._parser.crc_errors
 
     def _write_all(self, data: bytes) -> bool:
         view = memoryview(data)
@@ -216,18 +355,26 @@ class CFSTransport:
                     return None
                 frame = P.encode_frame(addr, status, fn, data)
                 completion = self.reactor.completion()
-                self._pending = {"fn": fn, "completion": completion}
+                self._pending = {"fn": fn, "completion": completion,
+                                 "sent": self.reactor.monotonic()}
                 if self.debug:
                     self.logger.debug("{}: TX {} {}".format(self.name, P.fn_name(fn), frame.hex()))
                 if not self._write_all(frame):
                     self._pending = None
+                    self._trace("tx_failed", fn=P.fn_name(fn), error=self.last_error)
                     continue
                 self.tx_count += 1
+                self._pending["sent"] = self.reactor.monotonic()
+                if not self.quiet:
+                    self._trace("tx", fn=P.fn_name(fn), addr=addr, data=bytes(data).hex(),
+                                attempt=attempt + 1)
                 result = completion.wait(self.reactor.monotonic() + timeout)
                 self._pending = None
                 if result is not None:
                     return result
                 self.timeouts += 1
+                self._trace("timeout", fn=P.fn_name(fn), addr=addr, data=bytes(data).hex(),
+                            attempt=attempt + 1, of=retries + 1, timeout_s=timeout)
                 if self.debug:
                     self.logger.debug("{}: timeout {} (attempt {}/{})".format(
                         self.name, P.fn_name(fn), attempt + 1, retries + 1))
@@ -267,6 +414,8 @@ class afcCFS(afcUnit):
                                         self.cmd_AFC_CFS_RECONNECT, desc=self.cmd_AFC_CFS_RECONNECT_help)
         self.gcode.register_mux_command("AFC_CFS_RAW", "UNIT", self.name,
                                         self.cmd_AFC_CFS_RAW, desc=self.cmd_AFC_CFS_RAW_help)
+        self.gcode.register_mux_command("AFC_CFS_TRACE", "UNIT", self.name,
+                                        self.cmd_AFC_CFS_TRACE, desc=self.cmd_AFC_CFS_TRACE_help)
 
     def _load_cfs_config(self, config) -> None:
         """Read every CFS-specific option. Kept separate so tests can apply
@@ -279,6 +428,15 @@ class afcCFS(afcUnit):
         self.offline_after = config.getint("offline_after_failures", 3, minval=1)
         self.reconnect_interval = config.getfloat("reconnect_interval", 5.0, minval=0.5)
         self.protocol_debug = config.getboolean("protocol_debug", False)
+
+        # --- Trace recording (see docs/CFS.md, "Recording a trace") ---
+        # JSON-lines record of box traffic and load/unload events. Off unless set.
+        self.trace_file = config.get("trace_file", None)
+        self.trace_max_size = config.getfloat("trace_max_size", 5.0, minval=0.1)   # MB
+        self.trace_backups = config.getint("trace_backups", 1, minval=0, maxval=10)
+        # Idle status polls run every poll_interval; leave them out of the trace
+        # unless asked (presence changes are always recorded).
+        self.trace_polls = config.getboolean("trace_polls", False)
 
         # --- Tool load sequence (EXTRUDE_PROCESS stages 0/4/5/6/7) ---
         self.load_attempts = config.getint("load_attempts", 2, minval=1)
@@ -316,6 +474,15 @@ class afcCFS(afcUnit):
         self.transport = CFSTransport(self.reactor, self.serial_path, self.baud,
                                       self.logger, "CFS {}".format(self.name),
                                       debug=self.protocol_debug)
+        self.trace = CFSTrace(self.trace_file, int(self.trace_max_size * 1024 * 1024),
+                              self.trace_backups, self.logger)
+        self.transport.trace = self.trace
+        if self.trace_file:
+            self.trace.start()
+            self.trace.event("trace_start", unit=self.name, serial=self.serial_path,
+                             box_addr=self.box_addr, settings=self._trace_settings())
+        self._traced_mask: Optional[int] = None
+        self._traced_print_state: Optional[str] = None
 
         # Box state, as last seen
         self.online = False
@@ -359,9 +526,37 @@ class afcCFS(afcUnit):
             self.reactor.unregister_timer(self._poll_timer)
             self._poll_timer = None
         self.transport.close()
+        self.trace.event("trace_stop", reason="klippy disconnect")
+        self.trace.stop()
 
     def _cutter_callback(self, eventtime, state):
         self.cutter_sensor_state = bool(state)
+        self.trace.event("cutter_sensor", triggered=self.cutter_sensor_state)
+
+    def _trace_settings(self) -> Dict[str, Any]:
+        keys = ("poll_interval", "request_timeout", "load_attempts", "stage_settle_time",
+                "stage5_poll_interval", "stage5_timeout", "stage5_stall_time",
+                "stage5_stall_distance", "prime1_length", "prime1_speed", "prime2_length",
+                "prime2_speed", "stage7_arg", "clear_mode_after_load",
+                "unload_retract_steps", "unload_tip_wiggle", "unload_timeout")
+        return {k: getattr(self, k, None) for k in keys}
+
+    def _trace_print_state(self) -> None:
+        """Record print start/stop so trace events can be tied to a job."""
+        printer = getattr(self, "printer", None)
+        if printer is None or not self.trace.enabled:
+            return
+        stats = printer.lookup_object("print_stats", None)
+        if stats is None:
+            return
+        try:
+            status = stats.get_status(self.reactor.monotonic())
+        except Exception:
+            return
+        state = status.get("state")
+        if state != self._traced_print_state:
+            self._traced_print_state = state
+            self.trace.event("print_state", state=state, filename=status.get("filename"))
 
     # -- connection --------------------------------------------------------
 
@@ -414,6 +609,7 @@ class afcCFS(afcUnit):
                                            timeout=self.request_timeout)
             if reply is not None:
                 self.version_sn = P.decode_ascii(reply.data)
+            self.trace.event("online", box_addr=self.box_addr, version=self.version_sn)
             self.logger.info("CFS {}: online (addr {}, version {})".format(
                 self.name, self.box_addr, self.version_sn or "unknown"))
         return True
@@ -421,6 +617,7 @@ class afcCFS(afcUnit):
     def _set_offline(self, reason: Optional[str]) -> None:
         if self.online:
             self.logger.warning("CFS {}: offline ({})".format(self.name, reason))
+            self.trace.event("offline", reason=reason)
         self.online = False
 
     # -- box requests (used by lanes) --------------------------------------
@@ -535,6 +732,7 @@ class afcCFS(afcUnit):
             if not self.online:
                 return self.reactor.monotonic() + self.poll_interval
 
+        self.transport.quiet = not self.trace_polls
         try:
             mask = self.read_material_mask()
             if mask is not None:
@@ -542,9 +740,17 @@ class afcCFS(afcUnit):
             self.read_buffer_state()
         except Exception:
             self.logger.debug("CFS {}: poll failed\n{}".format(self.name, traceback.format_exc()))
+        finally:
+            self.transport.quiet = False
+        self._trace_print_state()
         return self.reactor.monotonic() + self.poll_interval
 
     def _mirror_presence(self, mask: int) -> None:
+        if mask != self._traced_mask:
+            self.trace.event("presence", mask=mask,
+                             slots="".join(P.slot_letter(i) for i in P.bits_to_slots(mask)),
+                             previous=self._traced_mask)
+            self._traced_mask = mask
         for lane in self.lanes.values():
             update = getattr(lane, "cfs_update_presence", None)
             if update is None:
@@ -701,6 +907,7 @@ class afcCFS(afcUnit):
             "  link: tx {} rx {} timeouts {} crc errors {}".format(
                 self.transport.tx_count, self.transport.rx_count,
                 self.transport.timeouts, self.transport._parser.crc_errors),
+            "  trace: {}".format(self._trace_summary()),
         ]
         for lane in self.lanes.values():
             lines.append("  {} -> slot {}: {}".format(
@@ -717,6 +924,46 @@ class afcCFS(afcUnit):
             ok = self.connect()
         gcmd.respond_info("CFS {}: {}".format(
             self.name, "online" if ok else "offline ({})".format(self.transport.last_error or "no reply")))
+
+    def _trace_summary(self) -> str:
+        if not self.trace_file:
+            return "off (set trace_file to enable)"
+        if not self.trace.enabled:
+            return "paused ({})".format(self.trace.last_error or self.trace.path)
+        extra = ", {} dropped".format(self.trace.dropped) if self.trace.dropped else ""
+        return "recording to {} ({} events{})".format(self.trace.path, self.trace.written, extra)
+
+    cmd_AFC_CFS_TRACE_help = "Control the CFS trace recording or add a marker to it"
+
+    def cmd_AFC_CFS_TRACE(self, gcmd: GCodeCommand) -> None:
+        """
+        Pause/resume the trace or write a marker into it (e.g. before a test).
+
+        Usage
+        -----
+        `AFC_CFS_TRACE UNIT=<unit> [ENABLE=<0|1>] [MARK=<text>]`
+
+        Example
+        -------
+        ```
+        AFC_CFS_TRACE UNIT=CFS_1 MARK="test plan step 4, slot A"
+        ```
+        """
+        enable = gcmd.get_int("ENABLE", None, minval=0, maxval=1)
+        mark = gcmd.get("MARK", None)
+        if enable is not None:
+            if enable:
+                if not self.trace_file:
+                    raise gcmd.error("CFS {}: set trace_file in [AFC_CFS {}] first".format(
+                        self.name, self.name))
+                self.trace.start()
+                self.trace.event("trace_resume")
+            else:
+                self.trace.event("trace_pause")
+                self.trace.enabled = False
+        if mark is not None:
+            self.trace.event("mark", text=mark)
+        gcmd.respond_info("CFS {} trace: {}".format(self.name, self._trace_summary()))
 
     cmd_AFC_CFS_RAW_help = "Send one raw CFS frame (debugging only)"
 
@@ -760,6 +1007,7 @@ class afcCFS(afcUnit):
             "buffer_state": self.buffer_state,
             "box_status": P.status_name(self.box_status) if self.box_status is not None else None,
             "cutter_sensor": self.cutter_sensor_state if self.cutter_sensor_pin else None,
+            "trace": self.trace.path if self.trace.enabled else None,
         }
         return response
 

@@ -35,6 +35,7 @@ SCENARIOS = [
     "stall_fails_cleanly",
     "empty_slot",
     "offline",
+    "trace_recording",
 ]
 
 

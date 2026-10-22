@@ -126,7 +126,13 @@ class AFCCFSLane(AFCLane):
         unit = self.cfs
         return bool(unit.cutter_sensor_pin and unit.cutter_sensor_state)
 
+    def _trace(self, ev: str, **fields: Any) -> None:
+        trace = getattr(self.cfs, "trace", None)
+        if trace is not None:
+            trace.event(ev, lane=self.name, slot=self.slot_name, **fields)
+
     def _fail(self, message: str) -> None:
+        self._trace("fail", message=message, toolhead_sensor=self._toolhead_sensor())
         self.logger.error("CFS {} (slot {}): {}".format(self.name, self.slot_name, message))
         self.afc.error.handle_lane_failure(self, "CFS {}: {}".format(self.name, message))
 
@@ -168,6 +174,7 @@ class AFCCFSLane(AFCLane):
             self.logger.info("CFS {}: slot {} is empty".format(self.name, self.slot_name))
             self.unit_obj.on_filament_remove(self)
             if self.tool_loaded and self.afc.function.is_printing():
+                self._trace("runout", runout_lane=self.runout_lane)
                 fila = getattr(self, "fila_load", None)
                 if fila is not None and not fila.runout_helper.sensor_enabled:
                     self.logger.warning("CFS runout on {} ignored, sensor disabled".format(self.name))
@@ -253,7 +260,12 @@ class AFCCFSLane(AFCLane):
                 return False, "EXTRUDE_PROCESS stage {} returned {}".format(stage, reply.status_name())
             self._pause(settle)
 
+        stage5_start = self.reactor.monotonic()
         reached, detail = self._stage5_feed()
+        self._trace("stage5_result", reached=reached, detail=detail, attempt=attempt + 1,
+                    polls=self.last_load_report.get("stage5_polls"),
+                    wheel=self.last_load_report.get("wheel"),
+                    seconds=round(self.reactor.monotonic() - stage5_start, 2))
         self.logger.info("CFS {}: stage 5 {}".format(self.name, detail))
         if not reached:
             self._box_cleanup()
@@ -277,6 +289,9 @@ class AFCCFSLane(AFCLane):
         if reply is None or not reply.ok:
             self.logger.warning("CFS {}: stage 7 returned {}".format(
                 self.name, self.last_load_report["stage7"]))
+        self._trace("handoff", attempt=attempt + 1, stage6=self.last_load_report["stage6"],
+                    stage7=self.last_load_report["stage7"], stage7_arg=unit.stage7_arg,
+                    toolhead_sensor=self._toolhead_sensor())
 
         # Mark this slot as the active PRINT slot. Without this the box never
         # leaves its mid-load state and the next slot change fails.
@@ -300,6 +315,8 @@ class AFCCFSLane(AFCLane):
         `AFC_CFS_TOOL_LOAD LANE=<lane>`
         """
         unit = self.cfs
+        started = self.reactor.monotonic()
+        self._trace("load_start", toolhead_sensor=self._toolhead_sensor())
         self.select_lane()
         self.afc._check_extruder_temp(self)
         self.last_load_report = {"slot": self.slot_name}
@@ -322,8 +339,10 @@ class AFCCFSLane(AFCLane):
             self.afc.gcode.run_script_from_command(
                 "{} EXTRUDER={}".format(self.afc.park_cmd, self.extruder_obj.name))
 
+        attempts_used = 0
         with unit.operation():
             for attempt in range(unit.load_attempts):
+                attempts_used = attempt + 1
                 self.logger.info("CFS {}: loading slot {}, try {}/{}".format(
                     self.name, self.slot_name, attempt + 1, unit.load_attempts))
                 try:
@@ -334,6 +353,8 @@ class AFCCFSLane(AFCLane):
                     self.logger.debug(traceback.format_exc())
                 if ok:
                     break
+                self._trace("load_attempt_failed", attempt=attempt + 1, detail=detail,
+                            toolhead_sensor=self._toolhead_sensor())
                 self.logger.warning("CFS {}: load attempt {} failed: {}".format(
                     self.name, attempt + 1, detail))
                 if self._toolhead_sensor():
@@ -344,7 +365,9 @@ class AFCCFSLane(AFCLane):
 
         self.last_load_report["result"] = detail
         if not ok:
-            self._fail("load failed after {} attempt(s): {}".format(unit.load_attempts, detail))
+            self._trace("load_end", ok=False, detail=detail, attempts=attempts_used,
+                        seconds=round(self.reactor.monotonic() - started, 2))
+            self._fail("load failed after {} attempt(s): {}".format(attempts_used, detail))
             return
 
         # The handoff already pushed prime1 + prime2 past the sensor.
@@ -353,6 +376,9 @@ class AFCCFSLane(AFCLane):
             self.afc.move_e_pos(remaining, self.extruder_obj.tool_load_speed,
                                 "CFS tool_stn", wait_tool=True)
         self.loaded_to_hub = True
+        self._trace("load_end", ok=True, detail=detail, attempts=attempts_used,
+                    tool_stn_push=round(max(remaining, 0), 2),
+                    seconds=round(self.reactor.monotonic() - started, 2))
 
     # -- tool unload -----------------------------------------------------------
 
@@ -367,13 +393,17 @@ class AFCCFSLane(AFCLane):
             self.afc.gcode.run_script_from_command(
                 "{} EXTRUDER={}".format(self.afc.tool_cut_cmd, self.extruder_obj.name))
             if not unit.cutter_sensor_pin:
+                self._trace("cut", attempt=attempt + 1, verified=False)
                 return True
             start = self.reactor.monotonic()
             while self._cutter_engaged():
                 if self.reactor.monotonic() - start > unit.cutter_wait_time:
                     break
                 self._pause(0.01)
-            if not self._cutter_engaged():
+            released = not self._cutter_engaged()
+            self._trace("cut", attempt=attempt + 1, verified=True, released=released,
+                        seconds=round(self.reactor.monotonic() - start, 2))
+            if released:
                 return True
             self.logger.warning("CFS {}: cutter still engaged after cut {}".format(
                 self.name, attempt + 1))
@@ -407,6 +437,9 @@ class AFCCFSLane(AFCLane):
         for i, (dist, speed) in enumerate(unit.unload_retract_steps):
             # Check in with the box before every chunk, like stock does.
             reply = unit.retrude_stage(0x00, 0x00, timeout=2.0)
+            self._trace("retract_step", step=i + 1, mm=dist, speed=speed,
+                        box=P.status_name(reply.status if reply else None),
+                        toolhead_sensor=self._toolhead_sensor())
             if reply is None or not reply.ok:
                 if not self._toolhead_sensor():
                     unit.clear_latched_error()
@@ -436,6 +469,8 @@ class AFCCFSLane(AFCLane):
         `AFC_CFS_TOOL_UNLOAD LANE=<lane>`
         """
         unit = self.cfs
+        started = self.reactor.monotonic()
+        self._trace("unload_start", toolhead_sensor=self._toolhead_sensor())
         self.select_lane()
         self.afc._check_extruder_temp(self)
         self.disable_buffer()
@@ -460,6 +495,8 @@ class AFCCFSLane(AFCLane):
                 self.logger.debug(traceback.format_exc())
 
         self.logger.info("CFS {}: unload {}".format(self.name, detail))
+        self._trace("unload_end", ok=ok, detail=detail,
+                    seconds=round(self.reactor.monotonic() - started, 2))
         if not ok:
             self._fail("unload failed: {}".format(detail))
             return
