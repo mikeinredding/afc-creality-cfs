@@ -118,7 +118,9 @@ rm AFC_Turtle_1.cfg            # BoxTurtle unit: its [mcu Turtle_1] would stop K
 ## K1-series starting values (from Creality's box.cfg)
 
 A K1-series printer with the CFS kit has a `box.cfg` with Creality's positions. Translated to AFC
-(these came from a K1 Max's `box.cfg`; check the park/purge spot on other models, see below):
+(verified against a K1's own `box.cfg`; the K1 travels to X 229 / Y 227.5 once Simple AF
+removes Creality's `gcode_position_max` limits. On a K1 Max, check its `box.cfg` and
+redo the cutter calibration):
 
 | Creality `box.cfg` | Value | AFC setting |
 |---|---|---|
