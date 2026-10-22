@@ -40,6 +40,8 @@ SCENARIOS = [
     "late_reply_resync",
     "eject_part_fed",
     "unload_still_gripped",
+    "box_boots_late",
+    "offline_prep_then_online",
 ]
 
 

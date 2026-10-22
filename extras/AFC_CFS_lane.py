@@ -164,7 +164,17 @@ class AFCCFSLane(AFCLane):
         self.prep_state = present
         self._load_state = present
 
-        if not getattr(self, "_afc_prep_done", False) or previous is None:
+        if not getattr(self, "_afc_prep_done", False):
+            self.afc.save_vars()
+            return
+        if previous is None:
+            # PREP ran while the box was offline: this is the first real
+            # reading, not an insert or a runout.
+            msg = self.unit_obj.apply_lane_state(self, present)
+            if not present and not self.tool_loaded:
+                self.set_unloaded()
+            self.logger.info("CFS {}: box online, slot {}: {}".format(
+                self.name, self.slot_name, msg))
             self.afc.save_vars()
             return
 

@@ -485,6 +485,9 @@ class afcCFS(afcUnit):
         self.resync_timeout = config.getfloat("resync_timeout", 60.0, minval=1.0)
         self.offline_after = config.getint("offline_after_failures", 3, minval=1)
         self.reconnect_interval = config.getfloat("reconnect_interval", 5.0, minval=0.5)
+        # The box starts answering a few seconds after power-on, often after
+        # Klipper is already prepping lanes. PREP keeps trying this long.
+        self.boot_wait = config.getfloat("boot_wait", 20.0, minval=0.)
         self.protocol_debug = config.getboolean("protocol_debug", False)
 
         # --- Trace recording (see docs/CFS.md, "Recording a trace") ---
@@ -559,6 +562,7 @@ class afcCFS(afcUnit):
         self.box_status: Optional[int] = None
         self._consecutive_failures = 0
         self._last_reconnect_attempt = 0.0
+        self._boot_wait_done = False
         self._operation_depth = 0
         self._poll_timer = None
 
@@ -844,33 +848,25 @@ class afcCFS(afcUnit):
         """Restore lane state during PREP from the box's own sensors."""
         if not self.online:
             self.connect()
+        if not self.online and not self._boot_wait_done:
+            self._wait_for_box()
+        self._boot_wait_done = True
         if self.online and self.material_mask is None:
             self.read_material_mask()
 
-        present = bool(self.material_mask is not None
-                       and self.material_mask & P.slot_bit(cur_lane.index))
-        cur_lane.prep_state = present
-        cur_lane._load_state = present
-        if hasattr(cur_lane, "_cfs_present_last"):
-            cur_lane._cfs_present_last = present
-
         if not self.online:
+            # Unknown, not empty: the first poll after the box answers syncs
+            # this lane quietly instead of treating it as a new spool.
+            if hasattr(cur_lane, "_cfs_present_last"):
+                cur_lane._cfs_present_last = None
             msg = "<span class=error--text>CFS NOT RESPONDING</span>"
             self.lane_not_ready(cur_lane)
-        elif not present:
-            msg = "EMPTY READY FOR SPOOL"
-            self.lane_not_ready(cur_lane)
         else:
-            msg = "FILAMENT PRESENT"
-            self.lane_loaded(cur_lane)
-            if (cur_lane.tool_loaded
-                    and cur_lane.extruder_obj is not None
-                    and cur_lane.extruder_obj.lane_loaded == cur_lane.name):
-                if self.afc.current == cur_lane.name:
-                    self.lane_tool_loaded(cur_lane)
-                else:
-                    self.lane_tool_loaded_idle(cur_lane)
-                msg += " in ToolHead"
+            present = bool(self.material_mask is not None
+                           and self.material_mask & P.slot_bit(cur_lane.index))
+            if hasattr(cur_lane, "_cfs_present_last"):
+                cur_lane._cfs_present_last = present
+            msg = self.apply_lane_state(cur_lane, present)
 
         if assignTcmd:
             self.afc.function.TcmdAssign(cur_lane)
@@ -884,6 +880,37 @@ class afcCFS(afcUnit):
             lane=cur_lane.name, tcmd=tcmd, msg=msg))
         cur_lane.set_afc_prep_done()
         return self.online
+
+    def _wait_for_box(self) -> None:
+        """Keep trying to reach a box that is still booting, up to boot_wait."""
+        if self.boot_wait <= 0:
+            return
+        self.logger.info("CFS {}: waiting up to {:.0f}s for the box to start".format(
+            self.name, self.boot_wait))
+        deadline = self.reactor.monotonic() + self.boot_wait
+        while not self.online and self.reactor.monotonic() < deadline:
+            self.reactor.pause(self.reactor.monotonic() + 1.0)
+            self.connect()
+
+    def apply_lane_state(self, cur_lane: AFCLane, present: bool) -> str:
+        """Set a lane's presence and LEDs from the box's sensor; returns a
+        PREP-style status message."""
+        cur_lane.prep_state = present
+        cur_lane._load_state = present
+        if not present:
+            self.lane_not_ready(cur_lane)
+            return "EMPTY READY FOR SPOOL"
+        self.lane_loaded(cur_lane)
+        msg = "FILAMENT PRESENT"
+        if (cur_lane.tool_loaded
+                and cur_lane.extruder_obj is not None
+                and cur_lane.extruder_obj.lane_loaded == cur_lane.name):
+            if self.afc.current == cur_lane.name:
+                self.lane_tool_loaded(cur_lane)
+            else:
+                self.lane_tool_loaded_idle(cur_lane)
+            msg += " in ToolHead"
+        return msg
 
     def prep_load(self, lane: AFCLane) -> None:
         # The box pre-loads a newly inserted spool on its own.

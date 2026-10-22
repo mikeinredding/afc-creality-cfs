@@ -310,6 +310,81 @@ def sc_poll_presence(r):
     }, {"initial": initial, "after": after}
 
 
+def _prep_lane(rig, lane):
+    """Run the unit's PREP hook on a harness lane (AFC's bits mocked)."""
+    lane.prep_state = None
+    lane._load_state = None
+    lane.map = "T{}".format(lane.index - 1)
+    lane.send_lane_data = MagicMock()
+    lane.do_enable = MagicMock()
+    lane.set_afc_prep_done = MagicMock(side_effect=lambda: setattr(lane, "_afc_prep_done", True))
+    return rig.unit.system_Test(lane, 0, False, False)
+
+
+def sc_box_boots_late(r):
+    """Box starts answering ~2s into PREP: the first lane waits for it and
+    every lane preps normally."""
+    sim = FakeCFS(material_mask=0b0011)
+    sim.mute = True
+    rig = Rig(r, sim, boot_wait=6.0, request_timeout=0.2)
+    for name in ("lane_loaded", "lane_not_ready", "lane_tool_loaded", "lane_tool_loaded_idle"):
+        setattr(rig.unit, name, MagicMock())
+    rig.afc.current = None
+    lanes = [rig.lane(i) for i in (1, 2, 3)]
+    for l in lanes:
+        l._afc_prep_done = False
+
+    def unmute(eventtime):
+        sim.mute = False
+        return r.NEVER
+    r.register_timer(unmute, r.monotonic() + 2.0)
+    dog = Watchdog(r)
+    started = r.monotonic()
+    results = [_prep_lane(rig, l) for l in lanes]
+    took = r.monotonic() - started
+    dog.stop()
+    sim.close()
+    return {
+        "all_lanes_online": results == [True, True, True],
+        "presence_right": [l.prep_state for l in lanes] == [True, True, False],
+        # one connect attempt to a silent box takes a few seconds itself
+        "waited_for_box": 1.5 < took < 10.0,
+        "reactor_never_stalled": dog.never_stalled,
+    }, {"took": round(took, 2), "results": results}
+
+
+def sc_offline_prep_then_online(r):
+    """Box never answered during PREP; when it does, lanes sync quietly
+    (no insert event) and a tool-loaded lane stays loaded."""
+    sim = FakeCFS(material_mask=0b0011)
+    sim.mute = True
+    rig = Rig(r, sim, boot_wait=0.5, request_timeout=0.2, reconnect_interval=0.5,
+              poll_interval=0.2)
+    for name in ("lane_loaded", "lane_not_ready", "lane_tool_loaded", "lane_tool_loaded_idle"):
+        setattr(rig.unit, name, MagicMock())
+    rig.afc.current = None
+    lanes = [rig.lane(i) for i in (1, 2, 3)]
+    lanes[0].tool_loaded = True
+    rig.extruder.lane_loaded = "lane1"
+    for l in lanes:
+        l._afc_prep_done = False
+    results = [_prep_lane(rig, l) for l in lanes]
+    rig.unit._cfs_handle_ready()
+    sim.mute = False
+    wait(r, 3.0)
+    rig.unit._cfs_handle_disconnect()
+    sim.close()
+    return {
+        "prep_saw_offline": results == [False, False, False],
+        "came_online": rig.unit.online,
+        "presence_synced": [l._cfs_present_last for l in lanes] == [True, True, False],
+        "no_insert_event": not rig.unit.on_filament_insert.called,
+        "tool_loaded_kept": lanes[0].tool_loaded and not lanes[0].set_unloaded.called,
+        "tool_led_set": rig.unit.lane_tool_loaded_idle.called,
+    }, {"results": results, "online": rig.unit.online,
+        "presence": [l._cfs_present_last for l in lanes]}
+
+
 def _load(rig, lane):
     lane.cmd_AFC_CFS_TOOL_LOAD(None)
 

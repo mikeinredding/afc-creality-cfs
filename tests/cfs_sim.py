@@ -46,6 +46,7 @@ class FakeCFS:
         # and handles one command at a time, so later commands queue.
         self.stage_delays = dict(stage_delays or {})
         self.stage0_feed = stage0_feed        # mm stage 0 pushes toward the toolhead
+        self.mute = False                     # True = box not answering yet (booting)
         self.reel_positions = []              # filament position at each stage-1 reel
         self.reel_delay = reel_delay          # seconds RETRUDE stage 1 blocks (K1: 12.4)
 
@@ -109,6 +110,8 @@ class FakeCFS:
             for frame in self._parser.feed(chunk):
                 reply = self._handle(frame)
                 if reply is None:
+                    continue
+                if self.mute:                 # still booting: says nothing
                     continue
                 if self.drop_replies > 0:
                     self.drop_replies -= 1

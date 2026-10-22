@@ -244,6 +244,9 @@ class TestSystemTest:
         unit.lane_not_ready = MagicMock()
         unit.lane_tool_loaded = MagicMock()
         unit.lane_tool_loaded_idle = MagicMock()
+        unit.boot_wait = 0.0
+        unit._boot_wait_done = False
+        unit.reactor = AdvancingReactor()
         return unit
 
     def _lane(self, index=1, with_map_to_string=True):
@@ -282,3 +285,52 @@ class TestSystemTest:
         assert unit.system_Test(lane, 0, False, False) is False
         assert "NOT RESPONDING" in unit.logger.info.call_args.args[0]
         lane.set_afc_prep_done.assert_called_once()
+        # Unknown rather than empty, so the first poll doesn't see an insert
+        assert lane._cfs_present_last is None
+
+    def test_waits_for_booting_box_once(self):
+        unit = self._unit(online=False)
+        unit.material_mask = None
+        unit.boot_wait = 10.0
+        attempts = {"n": 0}
+
+        def connect():
+            attempts["n"] += 1
+            if attempts["n"] >= 4:          # answers on the 4th try
+                unit.online = True
+                unit.material_mask = 0b0001
+            return unit.online
+
+        unit.connect = MagicMock(side_effect=connect)
+        assert unit.system_Test(self._lane(1), 0, False, False) is True
+        assert attempts["n"] == 4
+        unit.lane_loaded.assert_called_once()
+
+    def test_boot_wait_only_for_first_lane(self):
+        unit = self._unit(online=False)
+        unit.material_mask = None
+        unit.boot_wait = 3.0
+        unit.system_Test(self._lane(1), 0, False, False)
+        first = unit.connect.call_count
+        unit.system_Test(self._lane(2), 0, False, False)
+        assert unit.connect.call_count == first + 1
+
+
+class TestFirstReadingAfterOfflinePrep:
+    def test_first_reading_is_not_an_insert(self):
+        lane = _make_lane(tool_loaded=True)
+        lane._cfs_present_last = None
+        lane.unit_obj.apply_lane_state = MagicMock(return_value="FILAMENT PRESENT in ToolHead")
+        lane.cfs_update_presence(True)
+        lane.unit_obj.apply_lane_state.assert_called_once_with(lane, True)
+        lane.unit_obj.on_filament_insert.assert_not_called()
+        lane.set_loaded.assert_not_called()
+        assert lane._cfs_present_last is True
+
+    def test_first_reading_empty_is_not_a_runout(self):
+        lane = _make_lane(printing=True, tool_loaded=False)
+        lane._cfs_present_last = None
+        lane.unit_obj.apply_lane_state = MagicMock(return_value="EMPTY READY FOR SPOOL")
+        lane.cfs_update_presence(False)
+        lane.unit_obj.on_filament_remove.assert_not_called()
+        lane.set_unloaded.assert_called_once()
