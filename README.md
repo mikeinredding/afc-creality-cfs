@@ -44,6 +44,16 @@ Then edit `AFC/AFC_CFS_1.cfg` (serial path, toolhead sensor pin, cutter position
 as described in [docs/CFS.md](docs/CFS.md) and restart Klipper.
 `./install.sh -u` removes the links.
 
+### Updating by hand
+
+```sh
+cd /usr/data/afc-creality-cfs && git pull
+supervisorctl restart klipper      # Simple AF; elsewhere: sudo systemctl restart klipper
+```
+
+Restart the Klipper **service**: `FIRMWARE_RESTART` / `RESTART` re-read the config
+but keep the already-loaded Python code, so an update wouldn't take effect.
+
 ### Updates through Moonraker
 
 ```ini
