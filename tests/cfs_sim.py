@@ -31,7 +31,8 @@ from extras import AFC_CFS_protocol as P
 class FakeCFS:
     def __init__(self, material_mask=0b0011, addressed=True, addr=1,
                  path_len=600.0, grip_len=620.0, feed_per_poll=60.0,
-                 reply_delay=0.02, stage5_delay=0.15):
+                 reply_delay=0.02, stage5_delay=0.15, stage_delays=None,
+                 stage0_feed=0.0):
         self.addr = addr if addressed else None
         self.uid = bytes(range(0x10, 0x1C))  # 12 bytes
         self.material_mask = material_mask
@@ -40,6 +41,11 @@ class FakeCFS:
         self.feed_per_poll = feed_per_poll
         self.reply_delay = reply_delay
         self.stage5_delay = stage5_delay
+        # EXTRUDE_PROCESS stage -> seconds the box spends before answering.
+        # The real box blocks on motor stages (stage 0 took ~3.7s on a K1)
+        # and handles one command at a time, so later commands queue.
+        self.stage_delays = dict(stage_delays or {})
+        self.stage0_feed = stage0_feed        # mm stage 0 pushes toward the toolhead
 
         self.position = 0.0
         self.wheel = 0.0
@@ -105,9 +111,13 @@ class FakeCFS:
                 if self.drop_replies > 0:
                     self.drop_replies -= 1
                     continue
-                delay = self.stage5_delay if (frame.fn == P.EXTRUDE_PROCESS and
-                                              len(frame.data) > 1 and frame.data[1] == 5) \
-                    else self.reply_delay
+                delay = self.reply_delay
+                if frame.fn == P.EXTRUDE_PROCESS and len(frame.data) > 1:
+                    stage = frame.data[1]
+                    if stage in self.stage_delays:
+                        delay = self.stage_delays[stage]
+                    elif stage == 5:
+                        delay = self.stage5_delay
                 time.sleep(delay)
                 os.write(self.master, self.garbage_before_reply + reply)
 
@@ -177,7 +187,7 @@ class FakeCFS:
         self.stages_seen.append(stage)
         if stage == 0:
             self.retruding = False
-            self.position = 0.0
+            self.position = min(self.position + self.stage0_feed, self.path_len)
         if stage == 5:
             if self.position < self.path_len:
                 step = min(self.feed_per_poll, self.path_len - self.position)

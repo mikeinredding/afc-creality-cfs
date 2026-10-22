@@ -36,6 +36,9 @@ SCENARIOS = [
     "empty_slot",
     "offline",
     "trace_recording",
+    "slow_stage0",
+    "late_reply_resync",
+    "eject_part_fed",
 ]
 
 

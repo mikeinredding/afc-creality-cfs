@@ -46,6 +46,7 @@ TIP_WIGGLE_STEPS = [(0.5, 600), (-5, 600), (2.5, 600), (-1.25, 600), (1.75, 600)
 class AFCCFSLane(AFCLane):
     cmd_AFC_CFS_TOOL_LOAD_help = "Load a CFS lane into the toolhead"
     cmd_AFC_CFS_TOOL_UNLOAD_help = "Unload a CFS lane from the toolhead back to the box"
+    cmd_AFC_CFS_EJECT_help = "Reel a CFS lane's filament back into the box (box motors only)"
 
     def __init__(self, config):
         super().__init__(config)
@@ -73,6 +74,9 @@ class AFCCFSLane(AFCLane):
         self.afc.gcode.register_mux_command("AFC_CFS_TOOL_UNLOAD", "LANE", self.name,
                                             self.cmd_AFC_CFS_TOOL_UNLOAD,
                                             desc=self.cmd_AFC_CFS_TOOL_UNLOAD_help)
+        self.afc.gcode.register_mux_command("AFC_CFS_EJECT", "LANE", self.name,
+                                            self.cmd_AFC_CFS_EJECT,
+                                            desc=self.cmd_AFC_CFS_EJECT_help)
         self._register_frontend_compat_aliases()
 
     # -- plumbing ------------------------------------------------------------
@@ -270,9 +274,9 @@ class AFCCFSLane(AFCLane):
         if not reached:
             self._box_cleanup()
             # Pull the partial feed back so the next attempt starts clean
-            unit.retrude_stage(bits, 0x00, timeout=3.0)
+            unit.retrude_stage(bits, 0x00)
             self._pause(0.5)
-            unit.retrude_stage(bits, 0x01, timeout=3.0)
+            unit.retrude_stage(bits, 0x01)
             unit.clear_latched_error()
             return False, detail
 
@@ -284,7 +288,7 @@ class AFCCFSLane(AFCLane):
         self.last_load_report["stage6"] = P.status_name(reply.status if reply else None)
         if unit.prime2_length > 0:
             self._e_move(unit.prime2_length, unit.prime2_speed, "prime 2")
-        reply = unit.extrude_stage(bits, 0x07, unit.stage7_arg, timeout=3.0)
+        reply = unit.extrude_stage(bits, 0x07, unit.stage7_arg)
         self.last_load_report["stage7"] = P.status_name(reply.status if reply else None)
         if reply is None or not reply.ok:
             self.logger.warning("CFS {}: stage 7 returned {}".format(
@@ -443,9 +447,9 @@ class AFCCFSLane(AFCLane):
         unit.pre_loading(P.PRELOAD_CLOSE)
         unit.set_box_mode(P.MODE_IDLE)
         self._pause(unit.stage_settle_time)
-        unit.retrude_stage(bits, 0x00, timeout=3.0)
+        unit.retrude_stage(bits, 0x00)
         self._pause(0.5)
-        unit.retrude_stage(bits, 0x01, timeout=3.0)
+        unit.retrude_stage(bits, 0x01)
 
         if unit.unload_tip_wiggle:
             for dist, speed in TIP_WIGGLE_STEPS:
@@ -453,7 +457,7 @@ class AFCCFSLane(AFCLane):
 
         for i, (dist, speed) in enumerate(unit.unload_retract_steps):
             # Check in with the box before every chunk, like stock does.
-            reply = unit.retrude_stage(0x00, 0x00, timeout=2.0)
+            reply = unit.retrude_stage(0x00, 0x00)
             self._trace("retract_step", step=i + 1, mm=dist, speed=speed,
                         box=P.status_name(reply.status if reply else None),
                         toolhead_sensor=self._toolhead_sensor())
@@ -471,7 +475,7 @@ class AFCCFSLane(AFCLane):
                 unit.clear_latched_error()
                 return False, "toolhead sensor still triggered {:.0f}s after retract".format(
                     unit.unload_timeout)
-            unit.retrude_stage(0x00, 0x00, timeout=1.0)
+            unit.retrude_stage(0x00, 0x00)
             self._pause(0.5)
         unit.clear_latched_error()
         return True, "toolhead clear"
@@ -519,6 +523,24 @@ class AFCCFSLane(AFCLane):
             self._fail("unload failed: {}".format(detail))
             return
         self.loaded_to_hub = False
+
+    def cmd_AFC_CFS_EJECT(self, gcmd: Any) -> None:
+        """
+        Reel this lane's filament back into the box using only the box
+        motors. For filament that stopped short of the extruder gears (an
+        interrupted load); filament in the toolhead needs AFC_CFS_TOOL_UNLOAD.
+
+        Usage
+        -----
+        `AFC_CFS_EJECT LANE=<lane>`
+        """
+        unit = self.cfs
+        if not unit.online and not unit.connect():
+            raise gcmd.error("CFS {}: box is offline".format(self.name))
+        ok, detail = unit.reel_back(self)
+        gcmd.respond_info("CFS {} (slot {}) eject: {}".format(self.name, self.slot_name, detail))
+        if not ok:
+            raise gcmd.error("CFS {}: eject did not finish cleanly: {}".format(self.name, detail))
 
     def get_status(self, eventtime=None, save_to_file=False):
         response = super().get_status(eventtime=eventtime, save_to_file=save_to_file)

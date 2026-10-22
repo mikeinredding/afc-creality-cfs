@@ -212,6 +212,18 @@ protocol directly.
 7. **Through AFC.** `CHANGE_TOOL LANE=lane2`, then `T0`/`T1` from the console.
 8. **A short two-colour print**, then a runout test (pull a spool mid-print).
 
+**Recovering from a failed load.** A load that stops before the extruder grabs the
+filament can leave it partway up the tube or at the toolhead sensor. Reel it back
+with the box alone, then clear AFC's error state:
+
+```
+AFC_CFS_EJECT LANE=lane1
+RESET_FAILURE
+```
+
+`AFC_CFS_EJECT` only works while the filament is short of the extruder gears; once
+the extruder has it, use `AFC_CFS_TOOL_UNLOAD`.
+
 If a load fails, the lane goes to error and AFC pauses. `AFC_CFS_STATUS` shows the
 box state; the lane's `cfs_last_load` status field records stage 5 polls, the last
 measuring-wheel reading and the stage 6/7 replies.
@@ -256,6 +268,12 @@ reply latency per command, non-OK box replies, timeouts, and a timeline of failu
 and markers. When reporting a problem, attach the trace file(s) and `klippy.log`.
 
 ## Known unknowns
+
+- **Motor commands block.** The box answers `EXTRUDE_PROCESS` / `RETRUDE_PROCESS`
+  stages only when the motion finishes and handles one command at a time; on a K1,
+  stage 0 took ~3.7 s. Those use `stage_timeout` (15 s). If one still times out,
+  the next command waits for its late reply (`resync_timeout`) instead of queueing
+  behind the busy box.
 
 - `stage7_arg` defaults to 3 (from an independent K2 implementation); the K1C
   testing used 2. If stage 7 returns `PARAMS_ERR`, try `stage7_arg: 2`.

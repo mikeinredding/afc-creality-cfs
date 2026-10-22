@@ -208,6 +208,15 @@ class CFSTransport:
         # When True, ordinary frames aren't traced (idle status polls)
         self.quiet = False
         self._traced_crc_errors = 0
+        # The box handles one command at a time and answers motor commands
+        # only once the motion finishes. Requests that timed out are still
+        # being processed; their replies arrive late. Count them and wait for
+        # them before sending anything else, so nothing queues up behind a
+        # busy box and a late reply can't be taken as the answer to a newer
+        # request.
+        self.resync_timeout = 15.0
+        self._outstanding = 0
+        self._drain: Optional[Any] = None
 
     def _trace(self, ev: str, **fields: Any) -> None:
         if self.trace is not None:
@@ -274,6 +283,9 @@ class CFSTransport:
         pending = self._pending
         if pending is not None and not pending["completion"].test():
             pending["completion"].complete(None)
+        self._outstanding = 0
+        if self._drain is not None and not self._drain.test():
+            self._drain.complete(False)
 
     # -- I/O ---------------------------------------------------------------
 
@@ -311,6 +323,15 @@ class CFSTransport:
                                 st=frame.status_name(), data=frame.data.hex(),
                                 ms=round((self.reactor.monotonic() - pending["sent"]) * 1000, 1))
                 pending["completion"].complete(frame)
+            elif self._outstanding > 0:
+                # Reply to a request we had already given up on
+                self._outstanding -= 1
+                self._trace("late_reply", fn=P.fn_name(frame.fn), addr=frame.addr,
+                            st=frame.status_name(), data=frame.data.hex(),
+                            still_outstanding=self._outstanding)
+                if self._outstanding == 0 and self._drain is not None \
+                        and not self._drain.test():
+                    self._drain.complete(True)
             else:
                 self._trace("rx_unsolicited", fn=P.fn_name(frame.fn), addr=frame.addr,
                             st=frame.status_name(), data=frame.data.hex())
@@ -344,15 +365,23 @@ class CFSTransport:
 
     def request(self, addr: int, fn: int, data: bytes = b"",
                 status: int = P.REQ_STATUS_NORMAL, timeout: float = 1.0,
-                retries: int = 1) -> Optional[P.Frame]:
+                retries: int = 1, motor: bool = False) -> Optional[P.Frame]:
         """
         Send one request and wait (cooperatively) for the matching reply.
         Returns the reply frame, or None after all retries time out.
+
+        motor=True marks a command the box only answers after a motion
+        finishes. If one of those times out the box is still busy with it, so
+        the next request first waits for its late reply. A non-motor request
+        that times out is treated as lost (box gone, frame dropped): nothing
+        to wait for.
         """
         with self._mutex:
             for attempt in range(retries + 1):
                 if self.fd is None and not self.open():
                     return None
+                if self._outstanding:
+                    self._wait_for_late_replies()
                 frame = P.encode_frame(addr, status, fn, data)
                 completion = self.reactor.completion()
                 self._pending = {"fn": fn, "completion": completion,
@@ -373,12 +402,31 @@ class CFSTransport:
                 if result is not None:
                     return result
                 self.timeouts += 1
+                if motor:
+                    self._outstanding += 1
                 self._trace("timeout", fn=P.fn_name(fn), addr=addr, data=bytes(data).hex(),
                             attempt=attempt + 1, of=retries + 1, timeout_s=timeout)
                 if self.debug:
                     self.logger.debug("{}: timeout {} (attempt {}/{})".format(
                         self.name, P.fn_name(fn), attempt + 1, retries + 1))
             return None
+
+    def _wait_for_late_replies(self) -> None:
+        """Block (cooperatively) until every timed-out request has been
+        answered, or resync_timeout passes."""
+        waiting = self._outstanding
+        start = self.reactor.monotonic()
+        self._drain = self.reactor.completion()
+        done = self._drain.wait(start + self.resync_timeout)
+        self._drain = None
+        waited = round(self.reactor.monotonic() - start, 2)
+        if done:
+            self._trace("resync", waited_s=waited, late_replies=waiting)
+        else:
+            self._trace("resync_gave_up", waited_s=waited, still_outstanding=self._outstanding)
+            self.logger.warning("{}: box never answered {} request(s); continuing".format(
+                self.name, self._outstanding))
+            self._outstanding = 0
 
     @property
     def busy(self) -> bool:
@@ -425,6 +473,15 @@ class afcCFS(afcUnit):
         self.box_addr = config.getint("box_addr", 1, minval=1, maxval=4)
         self.poll_interval = config.getfloat("poll_interval", 1.0, minval=0.2)
         self.request_timeout = config.getfloat("request_timeout", 0.8, minval=0.05)
+        # Motor commands (EXTRUDE/RETRUDE_PROCESS stages) are only answered once
+        # the motion finishes; on a K1 stage 0 takes ~3.7s.
+        self.stage_timeout = config.getfloat("stage_timeout", 15.0, minval=1.0)
+        # Generic RETRUDE_PROCESS check-ins during unload
+        self.checkin_timeout = config.getfloat("checkin_timeout", 5.0, minval=0.2)
+        # After a timeout, how long to wait for the box to finish the timed-out
+        # command (its late reply) before sending anything else. Must cover the
+        # slowest motor stage, so it is deliberately longer than stage_timeout.
+        self.resync_timeout = config.getfloat("resync_timeout", 30.0, minval=1.0)
         self.offline_after = config.getint("offline_after_failures", 3, minval=1)
         self.reconnect_interval = config.getfloat("reconnect_interval", 5.0, minval=0.5)
         self.protocol_debug = config.getboolean("protocol_debug", False)
@@ -480,6 +537,7 @@ class afcCFS(afcUnit):
         self.transport = CFSTransport(self.reactor, self.serial_path, self.baud,
                                       self.logger, "CFS {}".format(self.name),
                                       debug=self.protocol_debug)
+        self.transport.resync_timeout = self.resync_timeout
         self.trace = CFSTrace(self.trace_file, int(self.trace_max_size * 1024 * 1024),
                               self.trace_backups, self.logger)
         self.transport.trace = self.trace
@@ -544,7 +602,8 @@ class afcCFS(afcUnit):
 
     def _trace_settings(self) -> Dict[str, Any]:
         keys = ("poll_interval", "request_timeout", "load_attempts", "stage_settle_time",
-                "stage5_poll_interval", "stage5_timeout", "stage5_stall_time",
+                "stage_timeout", "checkin_timeout", "resync_timeout",
+            "stage5_poll_interval", "stage5_timeout", "stage5_stall_time",
                 "stage5_stall_distance", "prime1_length", "prime1_speed", "prime2_length",
                 "prime2_speed", "stage7_arg", "clear_mode_after_load",
                 "unload_retract_steps", "unload_tip_wiggle", "unload_timeout")
@@ -632,10 +691,10 @@ class afcCFS(afcUnit):
     # -- box requests (used by lanes) --------------------------------------
 
     def request(self, fn: int, data: bytes = b"", timeout: Optional[float] = None,
-                retries: int = 1) -> Optional[P.Frame]:
+                retries: int = 1, motor: bool = False) -> Optional[P.Frame]:
         reply = self.transport.request(self.box_addr, fn, data,
                                        timeout=timeout or self.request_timeout,
-                                       retries=retries)
+                                       retries=retries, motor=motor)
         if reply is None:
             self._consecutive_failures += 1
             if self._consecutive_failures >= self.offline_after:
@@ -657,17 +716,24 @@ class afcCFS(afcUnit):
 
     def pre_loading(self, action: int, slot_bits: int = P.SLOT_ALL,
                     timeout: Optional[float] = None) -> Optional[P.Frame]:
-        return self.request(P.SET_PRE_LOADING, bytes([slot_bits, action]), timeout=timeout)
+        motor = action in (P.PRELOAD_RUN, P.PRELOAD_TIGHT)
+        return self.request(P.SET_PRE_LOADING, bytes([slot_bits, action]),
+                            timeout=timeout or (self.stage_timeout if motor else None),
+                            motor=motor)
 
     def extrude_stage(self, slot_bits: int, stage: int, arg: int = 0x00,
                       timeout: Optional[float] = None) -> Optional[P.Frame]:
+        """Motor command: the box answers once the stage's motion finishes."""
         return self.request(P.EXTRUDE_PROCESS, bytes([slot_bits, stage, arg]),
-                            timeout=timeout, retries=0)
+                            timeout=timeout or self.stage_timeout, retries=0, motor=True)
 
     def retrude_stage(self, slot_bits: int, stage: int,
                       timeout: Optional[float] = None) -> Optional[P.Frame]:
+        """Motor command; slot_bits 0 is the generic check-in used during unload."""
+        if timeout is None:
+            timeout = self.stage_timeout if slot_bits else self.checkin_timeout
         return self.request(P.RETRUDE_PROCESS, bytes([slot_bits, stage]),
-                            timeout=timeout, retries=0)
+                            timeout=timeout, retries=0, motor=bool(slot_bits))
 
     def read_material_mask(self) -> Optional[int]:
         reply = self.request(P.GET_FILAMENT_SENSOR_STATE, bytes([P.SENSOR_BANK_MATERIAL]))
@@ -825,21 +891,50 @@ class afcCFS(afcUnit):
         return
 
     def eject_lane(self, lane: AFCLane) -> None:
-        """Reel a lane's filament back onto its spool (only valid when not in the toolhead)."""
+        """AFC's eject hook: reel a lane back onto its spool."""
+        ok, detail = self.reel_back(lane)
+        log = self.logger.info if ok else self.logger.error
+        log("CFS {}: eject {}: {}".format(self.name, lane.name, detail))
+
+    def reel_back(self, lane: AFCLane) -> tuple:
+        """
+        Reel a slot's filament back into the box with the box motors only.
+        Only valid while the filament is short of the extruder gears (e.g.
+        after a load that stopped before the handoff); filament gripped by the
+        extruder needs a full unload instead.
+        Returns (ok, detail).
+        """
         if lane.tool_loaded:
-            self.logger.error("CFS {}: unload {} from the toolhead before ejecting".format(
-                self.name, lane.name))
-            return
+            return False, "lane is loaded in the toolhead; use AFC_CFS_TOOL_UNLOAD"
         bits = P.slot_bit(lane.index)
+        self.trace.event("eject_start", lane=lane.name, slot=P.slot_letter(lane.index))
+        started = self.reactor.monotonic()
         with self.operation():
             self.pre_loading(P.PRELOAD_CLOSE)
             self.set_box_mode(P.MODE_IDLE)
+            replies = []
             for stage in (0x00, 0x01):
-                reply = self.retrude_stage(bits, stage, timeout=5.0)
-                self.logger.debug("CFS {}: eject {} retrude stage {} -> {}".format(
-                    self.name, lane.name, stage, P.status_name(reply.status if reply else None)))
+                reply = self.retrude_stage(bits, stage)
+                replies.append(P.status_name(reply.status if reply else None))
+                self.reactor.pause(self.reactor.monotonic() + 0.3)
+            # Keep checking in until the box reports the retrude finished
+            done = False
+            deadline = self.reactor.monotonic() + self.unload_timeout
+            while self.reactor.monotonic() < deadline:
+                reply = self.retrude_stage(0x00, 0x00)
+                if reply is None or not reply.ok:
+                    done = reply is not None
+                    break
                 self.reactor.pause(self.reactor.monotonic() + 0.5)
             self.clear_latched_error()
+        toolhead_clear = not lane.get_toolhead_pre_sensor_state()
+        seconds = round(self.reactor.monotonic() - started, 2)
+        ok = toolhead_clear and done
+        detail = "retrude stages {}, box {}, toolhead sensor {}".format(
+            "/".join(replies), "finished" if done else "did not confirm",
+            "clear" if toolhead_clear else "STILL TRIGGERED")
+        self.trace.event("eject_end", lane=lane.name, ok=ok, detail=detail, seconds=seconds)
+        return ok, detail
 
     def move_to_hub(self, lane, dist, dir, use_homing=True, speed_mode=None, assist_active=None):
         self.logger.debug("CFS {}: move_to_hub not supported, box handles feeding".format(self.name))

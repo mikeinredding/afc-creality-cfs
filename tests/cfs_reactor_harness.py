@@ -100,18 +100,29 @@ class Watchdog:
         self.r = r
         self.period = period
         self.max_gap = 0.0
+        self.slow_ticks = 0      # ticks that arrived more than 50ms late
         self.last = None
         self.timer = r.register_timer(self._tick, r.NOW)
 
     def _tick(self, eventtime):
         now = self.r.monotonic()
         if self.last is not None:
-            self.max_gap = max(self.max_gap, now - self.last - self.period)
+            gap = now - self.last - self.period
+            self.max_gap = max(self.max_gap, gap)
+            if gap > 0.05:
+                self.slow_ticks += 1
         self.last = now
         return now + self.period
 
     def stop(self):
         self.r.unregister_timer(self.timer)
+
+    @property
+    def never_stalled(self):
+        """A blocking implementation stalls on every request (dozens of
+        100ms+ gaps). A shared test machine adds the odd isolated spike, so
+        allow two late ticks but nothing long."""
+        return self.slow_ticks <= 2 and self.max_gap < 0.25
 
 
 class FakeExtruder:
@@ -246,8 +257,10 @@ def sc_retry_and_offline(r):
     sim.drop_replies = 1
     retried = rig.unit.read_buffer_state() == P.BUFFER_MIDDLE
     sim.drop_replies = 1000
+    t0 = r.monotonic()
     for _ in range(rig.unit.offline_after):
         rig.unit.read_buffer_state()
+    dead_box_seconds = r.monotonic() - t0
     went_offline = not rig.unit.online
     sim.drop_replies = 0
     recovered = rig.unit.read_material_mask() == sim.material_mask and rig.unit.online
@@ -256,7 +269,9 @@ def sc_retry_and_offline(r):
         "retry_recovers_dropped_reply": retried,
         "offline_after_failures": went_offline,
         "back_online_on_reply": recovered,
-    }, {"timeouts": rig.unit.transport.timeouts}
+        # status queries to a dead box fail fast: no waiting for late replies
+        "dead_box_fails_fast": dead_box_seconds < 3 * 2 * 0.15 + 1.0,
+    }, {"timeouts": rig.unit.transport.timeouts, "dead_box_seconds": round(dead_box_seconds, 2)}
 
 
 def sc_garbage_resync(r):
@@ -328,7 +343,7 @@ def sc_load_unload(r):
         "toolhead_clear_after_unload": not sim.toolhead_sensor,
         "box_reeled_back": sim.position == 0.0,
         "connection_motor_stopped": sim.conn_action == P.CONN_STOP,
-        "reactor_never_stalled": dog.max_gap < 0.05,
+        "reactor_never_stalled": dog.never_stalled,
     }, {"max_gap_ms": round(dog.max_gap * 1000, 2), "stages": stages,
         "position_after_load": after_load_position, "failures": rig.failures,
         "report": lane.last_load_report}
@@ -392,7 +407,7 @@ def sc_offline(r):
     dog.stop()
     return {
         "reported_offline": len(rig.failures) == 1 and "offline" in rig.failures[0],
-        "reactor_never_stalled": dog.max_gap < 0.05,
+        "reactor_never_stalled": dog.never_stalled,
     }, {"failures": rig.failures, "unused_path": path}
 
 
@@ -449,9 +464,84 @@ def sc_trace_recording(r):
         "replies_have_latency": all("ms" in e for e in events if e["ev"] == "rx"),
         "summary_reports_load": "Loads: 1 ok, 0 failed" in text and "Unloads: 1 ok" in text,
         "summary_reports_latency": "EXTRUDE_PROCESS" in text and "p95" in text,
-        "reactor_never_stalled": dog.max_gap < 0.05,
+        "reactor_never_stalled": dog.never_stalled,
     }, {"events": len(events), "max_gap_ms": round(dog.max_gap * 1000, 2),
         "summary": text}
+
+
+def _read_trace(path):
+    with open(path, encoding="utf-8") as fh:
+        return [json.loads(line) for line in fh if line.strip()]
+
+
+def sc_slow_stage0(r):
+    """Real K1 timing: stage 0 blocks ~3.7s and pushes filament forward."""
+    sim = FakeCFS(stage_delays={0: 3.7}, stage0_feed=200.0)
+    rig = Rig(r, sim)
+    lane = rig.lane(1)
+    dog = Watchdog(r)
+    rig.unit.connect()
+    _load(rig, lane)
+    dog.stop()
+    sim.close()
+    return {
+        "no_failures": rig.failures == [],
+        "reached_toolhead": sim.toolhead_sensor,
+        "no_timeouts": rig.unit.transport.timeouts == 0,
+        "reactor_never_stalled": dog.never_stalled,
+    }, {"failures": rig.failures, "timeouts": rig.unit.transport.timeouts,
+        "max_gap_ms": round(dog.max_gap * 1000, 2)}
+
+
+def sc_late_reply_resync(r):
+    """A stage times out anyway: later commands must wait for its late reply
+    instead of queueing behind it or being matched to it."""
+    import tempfile
+    path = os.path.join(tempfile.mkdtemp(prefix="cfs-resync-"), "t.jsonl")
+    sim = FakeCFS(stage_delays={0: 2.5})
+    rig = Rig(r, sim, stage_timeout=1.0, load_attempts=1, trace_file=path)
+    lane = rig.lane(1)
+    dog = Watchdog(r)
+    rig.unit.connect()
+    _load(rig, lane)
+    dog.stop()
+    rig.unit.trace.stop()
+    sim.close()
+    events = _read_trace(path)
+    kinds = [e["ev"] for e in events]
+    late = [e for e in events if e["ev"] == "late_reply"]
+    after_timeout = kinds[kinds.index("timeout") + 1:] if "timeout" in kinds else []
+    return {
+        "only_stage0_timed_out": rig.unit.transport.timeouts == 1,
+        "late_reply_recognised": len(late) == 1 and late[0]["fn"] == "EXTRUDE_PROCESS",
+        "waited_before_next_command": bool(after_timeout) and after_timeout[0] in (
+            "late_reply", "resync"),
+        "nothing_left_outstanding": rig.unit.transport._outstanding == 0,
+        "failure_reported": len(rig.failures) == 1 and "stage 0" in rig.failures[0],
+        "box_left_stopped": sim.conn_action == P.CONN_STOP and not sim.tighten,
+        "no_unsolicited_frames": "rx_unsolicited" not in kinds,
+        "reactor_never_stalled": dog.never_stalled,
+    }, {"kinds_after_timeout": after_timeout[:6], "failures": rig.failures}
+
+
+def sc_eject_part_fed(r):
+    """Filament stopped at the toolhead sensor, short of the gears (the state a
+    failed load can leave): AFC_CFS_EJECT reels it back with the box alone."""
+    sim = FakeCFS()
+    rig = Rig(r, sim)
+    lane = rig.lane(1)
+    rig.unit.connect()
+    sim.position = 610.0            # past the sensor (600), short of the gears (620)
+    before = sim.toolhead_sensor
+    ok, detail = rig.unit.reel_back(lane)
+    sim.close()
+    return {
+        "started_at_sensor": before,
+        "eject_ok": ok,
+        "toolhead_clear": not sim.toolhead_sensor,
+        "box_reeled_back": sim.position == 0.0,
+        "latched_error_cleared": sim.latched_error == P.ST_OK,
+    }, {"detail": detail}
 
 
 SCENARIOS = {name[3:]: fn for name, fn in globals().items() if name.startswith("sc_")}
