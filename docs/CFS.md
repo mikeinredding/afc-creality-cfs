@@ -43,7 +43,7 @@ tip per AFC settings → `RETRUDE_PROCESS <slot>` stages 0, 1 → retract the ex
 in steps (`unload_retract_steps`), checking in with the box (`RETRUDE_PROCESS 0,0`)
 before each one → wait for the toolhead sensor to clear.
 
-## Setup on a K1 Max with Simple AF
+## Setup on a K1 / K1 Max with Simple AF
 
 1. Install AFC with the steps in Simple AF's FAQ,
    [How to install AFC on Simple AF](https://pellcorp.github.io/creality-wiki/faq/#how-to-install-afc-on-simple-af).
@@ -115,9 +115,10 @@ rm AFC_Turtle_1.cfg            # BoxTurtle unit: its [mcu Turtle_1] would stop K
 `mcu/AFC_Lite.cfg` can stay; it was only loaded from that file. Then run this repo's
 `./install.sh -t` and continue with step 3 above.
 
-## K1 Max starting values (from Creality's box.cfg)
+## K1-series starting values (from Creality's box.cfg)
 
-A K1 Max with the CFS kit ships a `box.cfg` with Creality's positions. Translated to AFC:
+A K1-series printer with the CFS kit has a `box.cfg` with Creality's positions. Translated to AFC
+(these came from a K1 Max's `box.cfg`; check the park/purge spot on other models, see below):
 
 | Creality `box.cfg` | Value | AFC setting |
 |---|---|---|
@@ -138,7 +139,7 @@ So, in `AFC.cfg`: `park_cmd: AFC_CFS_PARK`, `kick: False`, `wipe: False` (for no
 
 ```ini
 [gcode_macro _AFC_CUT_TIP_VARS]
-variable_pin_loc_xy     : 42, 218.5     # measured on a K1 Max; calibrate yours, see below
+variable_pin_loc_xy     : 42, 218.5     # measured on a K1; calibrate yours, see below
 variable_cut_direction  : "back"
 variable_pin_park_dist  : 6.0
 variable_cut_move_dist  : 6.5           # full cut at 225.0: 1 mm past the switch (224.0)
@@ -179,7 +180,7 @@ PA8 switch. Do the equivalent once by hand. Nothing hot, toolhead empty:
 5. Test with filament loaded by hand and the nozzle hot: `AFC_CUT`. If the filament
    isn't cut through, raise `cut_move_dist` by 0.3 mm at a time, up to trigger + 1.3 mm.
 
-Measured on one K1 Max: arm touches the pin at **Y 218.5**, switch triggers at
+Measured on a K1 with the CFS kit: arm touches the pin at **Y 218.5**, switch triggers at
 **Y 224.0** (Creality's `cut_pos_y` is 224.3). So the PA8 switch is an
 **end-of-travel** switch, not a contact switch: it closes only when the blade has
 nearly finished its stroke. The unload uses that. With `cutter_sensor_pin` set,
