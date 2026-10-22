@@ -115,6 +115,67 @@ rm AFC_Turtle_1.cfg            # BoxTurtle unit: its [mcu Turtle_1] would stop K
 `mcu/AFC_Lite.cfg` can stay; it was only loaded from that file. Then run this repo's
 `./install.sh -t` and continue with step 3 above.
 
+## K1 Max starting values (from Creality's box.cfg)
+
+A K1 Max with the CFS kit ships a `box.cfg` with Creality's positions. Translated to AFC:
+
+| Creality `box.cfg` | Value | AFC setting |
+|---|---|---|
+| `[serial_485] serial` | `/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0` | `[AFC_CFS] serial` |
+| `switch_pin` | `nozzle_mcu:PA8` | `[AFC_CFS] cutter_sensor_pin` |
+| `[box] filament_sensor` → `filament_sensor_2` | `^!nozzle_mcu:PA10` | `[AFC_extruder] pin_tool_start` |
+| `cut_pos_x` | 42.0 | `_AFC_CUT_TIP_VARS` `pin_loc_xy` X |
+| `pre_cut_pos_y` → `cut_pos_y` | 160 → 224.3 (moves toward +Y) | `cut_direction: "back"` |
+| `cut_pos_y` − `cut_find_start_offset_y` | 224.3 − 6 = 218.3 | `pin_loc_xy` Y (estimate, calibrate below) |
+| `cut_pos_y` | 224.3 | full cut = `pin_loc_y + cut_move_dist` → `cut_move_dist: 6.0` |
+| `extrude_pos_x/y/z` | 148, 225.3, Z 30 | `AFC_CFS_PARK` `park_x/park_y/min_z`, `_AFC_POOP_VARS` `purge_loc_xy` |
+| `box_need_clean_length` | 140 mm | `_AFC_POOP_VARS` `purge_length` |
+| `Tn_extrude_velocity` | 360 mm/min | `purge_spd: 6` (mm/s) |
+| `clean_left/right_pos` | X 153.5–178, Y 225.3 | wiper, if you enable `wipe` later: `brush_loc: 165.75, 225.3, -1`, `brush_width: 24.5` |
+
+So, in `AFC.cfg`: `park_cmd: AFC_CFS_PARK`, `kick: False`, `wipe: False` (for now). In
+`AFC_Macro_Vars.cfg`:
+
+```ini
+[gcode_macro _AFC_CUT_TIP_VARS]
+variable_pin_loc_xy     : 42, 218.3     # calibrate the Y, see below
+variable_cut_direction  : "back"
+variable_pin_park_dist  : 6.0
+variable_cut_move_dist  : 6.0           # 218.3 + 6.0 = 224.3, Creality's cut_pos_y
+
+[gcode_macro _AFC_POOP_VARS]
+variable_purge_loc_xy   : 148, 225.3
+variable_z_purge_move   : False         # True would drop to Z 0.6 at the chute
+variable_purge_spd      : 6
+variable_purge_length   : 140           # stock; tune down once colour changes are clean
+
+[gcode_macro _AFC_PARK_VARS]
+variable_park_loc_xy    : 148, 225.3    # unused with AFC_CFS_PARK; set to silence AFC's warning
+```
+
+**Why `AFC_CFS_PARK`:** AFC_PARK can only raise Z relative to the current height. A
+load near the bed (first load of a print, or right after homing) would reach the
+purge chute at Z ~0–2, where the mechanism hits the bed. `AFC_CFS_PARK` (in the
+template) raises Z to at least 30, never lowers it, then moves over the chute.
+During tool changes AFC also lifts by `[AFC] z_hop` before the cut.
+
+### Calibrating the cutter position
+
+Creality finds the cutter each time by moving toward `cut_pos_y` and watching the
+PA8 switch. Do the equivalent once by hand. Nothing hot, toolhead empty:
+
+1. `G28`, then `G90` and `G1 X42 Y212 F6000` (6 mm in front of the estimated pin).
+2. Step toward the back with `G1 Y214`, `G1 Y216`, `G1 Y217`, then 0.5 mm at a time,
+   watching the cutter arm. Stop the moment the arm **touches** the pin. That Y is
+   your `pin_loc_y`. Never go past Y 225.6 (`cut_pos_y` + Creality's 1.3 mm offset).
+3. Keep stepping 0.5 mm at a time and run `AFC_CFS_STATUS UNIT=CFS_1` after each;
+   note the Y where `cutter sensor` turns **triggered**. If it never changes, the pin
+   polarity is wrong (try `!nozzle_mcu:PA8`).
+4. Set `cut_move_dist` so `pin_loc_y + cut_move_dist = 224.3`, then `G1 Y212` to
+   back off.
+5. Test with filament loaded by hand and the nozzle hot: `AFC_CUT`. If the filament
+   isn't cut through, raise `cut_move_dist` by 0.5 mm at a time, up to 1.3 mm more.
+
 ## Test plan — do these in order, at the printer
 
 Each step should pass before the next. `AFC_CFS_RAW` is available for poking at the
