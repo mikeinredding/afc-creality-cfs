@@ -43,6 +43,12 @@ tip per AFC settings → box idle, pre-loading off → retract the extruder in s
 (`unload_retract_steps`, 60 mm total by default, like stock's `Tn_retrude -60`) so
 the gears let go → `RETRUDE_PROCESS <slot>` stages 0, 1 (the box reels the slot
 back; stage 1 is answered when it has finished) → toolhead sensor must be clear.
+On the K1-series CFS toolhead the cutter sits below the extruder gears, just
+above the nozzle (~30 mm from the gears, Creality's `buffer_empty_len`), and the
+toolhead sensor is above the gears. So after the cut the gears still hold the
+filament: the extruder retract must clear them before the box can reel, and the
+toolhead sensor only clears once the box pulls the tip past it. The stub below
+the cut stays in the nozzle and is purged by the next load.
 AFC is told the tool is loaded/unloaded even when `AFC_CFS_TOOL_LOAD`/`UNLOAD`
 are run by hand.
 
