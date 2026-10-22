@@ -49,6 +49,8 @@ before each one → wait for the toolhead sensor to clear.
    [How to install AFC on Simple AF](https://pellcorp.github.io/creality-wiki/faq/#how-to-install-afc-on-simple-af).
    Clone into `/usr/data`, not `/root`. This works with AFCProject's `main` branch
    (what that FAQ installs) and with newer AFC `DEV` builds; CI tests both.
+   AFC's installer has no CFS option; see
+   [AFC installer choices for a CFS](#afc-installer-choices-for-a-cfs) below.
 2. Install this repo, also under `/usr/data`:
    ```sh
    cd /usr/data
@@ -66,15 +68,52 @@ before each one → wait for the toolhead sensor to clear.
    others have tested.
 4. Edit `AFC/AFC_CFS_1.cfg`:
    - `serial:` — `ls /dev/serial/by-id/`, pick the `1a86` device.
+   - `cutter_sensor_pin:` — if your kit's cutter switch is on a Klipper pin.
+
+   And in `AFC/AFC_Hardware.cfg`, under `[AFC_extruder extruder]` (not in the CFS
+   file: AFC loads `AFC/*.cfg` alphabetically, so `AFC_Hardware.cfg` would override it):
    - `pin_tool_start:` — the CFS kit's toolhead filament sensor. Simple AF deletes
      `[filament_switch_sensor filament_sensor_2]` on install; take its `switch_pin`
      from your stock config backup.
-   - `cutter_sensor_pin:` — if your kit's cutter switch is on a Klipper pin.
+   - `tool_stn:` — sensor-to-nozzle distance (start around 60 and measure),
+     `tool_stn_unload: 0`, `tool_load_speed: 10`.
 5. In `AFC_Macro_Vars.cfg`, set `variable_pin_loc_xy` to **your** measured cutter
    lever position. Measure it by jogging from the console in small steps until the
    lever is pressed; don't copy someone else's numbers. The community has seen it
    move after the kit was re-seated.
 6. In GrumpyScreen's `grumpyscreen.ini` set `[mmu] backend: afc` to get the lane panel.
+
+## AFC installer choices for a CFS
+
+AFC's `install-afc.sh` only knows units it drives itself (BoxTurtle, NightOwl, …).
+Install it as a 4-lane BoxTurtle to get AFC's shared files, then remove the BoxTurtle
+unit file. In the **I. Install New System** menu:
+
+| Option | Set to | Why |
+|---|---|---|
+| T. Installation Type | `BoxTurtle (4-Lane)` (default) | Simplest unit file to remove afterwards |
+| 1. Add AFC includes | `True` | Adds `[include AFC/*.cfg]` to printer.cfg |
+| 2. Tip-forming | `False` | The CFS kit cuts |
+| 3. Toolhead cutter | `True` | Uses `AFC_CUT` with your lever position |
+| 4. Hub cutter | `False` | |
+| 5. Kick macro | `False` | Needs a kick target the K1 doesn't have |
+| 6. Park macro | `True` | Park over the purge chute before loads |
+| 7. Poop macro | `True` | Purges after a colour change |
+| 8. Wipe macro | `False` until you configure a brush position | |
+| 9. Toolhead sensor or ramming | `Sensor` | The CFS kit has a toolhead sensor |
+| A. Toolhead sensor pin | the CFS kit's sensor pin | Written to `AFC_Hardware.cfg` |
+| B. Buffer type | `None` | The CFS buffer is inside the box |
+| C. BoxTurtle Name | leave `Turtle_1` | |
+
+Then **I** to install, and **Q** to quit. Afterwards, before restarting Klipper:
+
+```sh
+cd /usr/data/printer_data/config/AFC
+rm AFC_Turtle_1.cfg            # BoxTurtle unit: its [mcu Turtle_1] would stop Klipper starting
+```
+
+`mcu/AFC_Lite.cfg` can stay; it was only loaded from that file. Then run this repo's
+`./install.sh -t` and continue with step 3 above.
 
 ## Test plan — do these in order, at the printer
 
