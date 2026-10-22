@@ -474,14 +474,15 @@ class afcCFS(afcUnit):
         self.poll_interval = config.getfloat("poll_interval", 1.0, minval=0.2)
         self.request_timeout = config.getfloat("request_timeout", 0.8, minval=0.05)
         # Motor commands (EXTRUDE/RETRUDE_PROCESS stages) are only answered once
-        # the motion finishes; on a K1 stage 0 takes ~3.7s.
-        self.stage_timeout = config.getfloat("stage_timeout", 15.0, minval=1.0)
+        # the motion finishes. On a K1: EXTRUDE stage 0 ~3.7s, RETRUDE stage 1
+        # (the full reel-back) ~12.4s; a K1 Max's longer tube takes longer.
+        self.stage_timeout = config.getfloat("stage_timeout", 30.0, minval=1.0)
         # Generic RETRUDE_PROCESS check-ins during unload
         self.checkin_timeout = config.getfloat("checkin_timeout", 5.0, minval=0.2)
         # After a timeout, how long to wait for the box to finish the timed-out
         # command (its late reply) before sending anything else. Must cover the
         # slowest motor stage, so it is deliberately longer than stage_timeout.
-        self.resync_timeout = config.getfloat("resync_timeout", 30.0, minval=1.0)
+        self.resync_timeout = config.getfloat("resync_timeout", 60.0, minval=1.0)
         self.offline_after = config.getint("offline_after_failures", 3, minval=1)
         self.reconnect_interval = config.getfloat("reconnect_interval", 5.0, minval=0.5)
         self.protocol_debug = config.getboolean("protocol_debug", False)
@@ -913,19 +914,17 @@ class afcCFS(afcUnit):
             self.pre_loading(P.PRELOAD_CLOSE)
             self.set_box_mode(P.MODE_IDLE)
             replies = []
+            reply = None
             for stage in (0x00, 0x01):
                 reply = self.retrude_stage(bits, stage)
                 replies.append(P.status_name(reply.status if reply else None))
-                self.reactor.pause(self.reactor.monotonic() + 0.3)
-            # Keep checking in until the box reports the retrude finished
-            done = False
-            deadline = self.reactor.monotonic() + self.unload_timeout
-            while self.reactor.monotonic() < deadline:
-                reply = self.retrude_stage(0x00, 0x00)
                 if reply is None or not reply.ok:
-                    done = reply is not None
                     break
-                self.reactor.pause(self.reactor.monotonic() + 0.5)
+                self.reactor.pause(self.reactor.monotonic() + 0.3)
+            # Stage 1 is the reel-back itself and is only answered once it has
+            # finished (12.4s for 1.5m on a K1), so its OK means "done".
+            # Generic check-ins just answer OK while idle and say nothing.
+            done = reply is not None and reply.ok and len(replies) == 2
             self.clear_latched_error()
         toolhead_clear = not lane.get_toolhead_pre_sensor_state()
         seconds = round(self.reactor.monotonic() - started, 2)

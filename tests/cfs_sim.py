@@ -32,7 +32,7 @@ class FakeCFS:
     def __init__(self, material_mask=0b0011, addressed=True, addr=1,
                  path_len=600.0, grip_len=620.0, feed_per_poll=60.0,
                  reply_delay=0.02, stage5_delay=0.15, stage_delays=None,
-                 stage0_feed=0.0):
+                 stage0_feed=0.0, reel_delay=0.0):
         self.addr = addr if addressed else None
         self.uid = bytes(range(0x10, 0x1C))  # 12 bytes
         self.material_mask = material_mask
@@ -46,6 +46,7 @@ class FakeCFS:
         # and handles one command at a time, so later commands queue.
         self.stage_delays = dict(stage_delays or {})
         self.stage0_feed = stage0_feed        # mm stage 0 pushes toward the toolhead
+        self.reel_delay = reel_delay          # seconds RETRUDE stage 1 blocks (K1: 12.4)
 
         self.position = 0.0
         self.wheel = 0.0
@@ -118,6 +119,9 @@ class FakeCFS:
                         delay = self.stage_delays[stage]
                     elif stage == 5:
                         delay = self.stage5_delay
+                elif frame.fn == P.RETRUDE_PROCESS and len(frame.data) > 1 \
+                        and frame.data[0] and frame.data[1] == 1:
+                    delay = self.reel_delay
                 time.sleep(delay)
                 os.write(self.master, self.garbage_before_reply + reply)
 
@@ -202,6 +206,12 @@ class FakeCFS:
         slot, stage = f.data[0], f.data[1]
         if slot:
             self.retruding = True
+            # Stage 1 is the reel-back: the real box answers once it's done.
+            # Filament the extruder still grips can't be reeled.
+            if stage == 1 and self.position < self.grip_len:
+                self.position = 0.0
+                self.retruding = False
+                self.connected_mask = 0
             return self._reply(a, P.ST_OK, f.fn)
         # Generic check-in [0x00, 0x00]: reel back what the extruder released
         if self.retruding and self.position < self.grip_len:

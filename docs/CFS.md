@@ -271,7 +271,9 @@ and markers. When reporting a problem, attach the trace file(s) and `klippy.log`
 
 - **Motor commands block.** The box answers `EXTRUDE_PROCESS` / `RETRUDE_PROCESS`
   stages only when the motion finishes and handles one command at a time; on a K1,
-  stage 0 took ~3.7 s. Those use `stage_timeout` (15 s). If one still times out,
+  stage 0 took ~3.7 s and the `RETRUDE_PROCESS` stage-1 reel-back of 1.5 m took 12.4 s.
+  Those use `stage_timeout` (30 s). Stage 1 answering OK is the "reel-back done" signal;
+  generic check-ins only report idle. If one still times out,
   the next command waits for its late reply (`resync_timeout`) instead of queueing
   behind the busy box.
 

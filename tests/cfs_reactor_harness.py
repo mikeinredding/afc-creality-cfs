@@ -527,13 +527,15 @@ def sc_late_reply_resync(r):
 def sc_eject_part_fed(r):
     """Filament stopped at the toolhead sensor, short of the gears (the state a
     failed load can leave): AFC_CFS_EJECT reels it back with the box alone."""
-    sim = FakeCFS()
+    sim = FakeCFS(reel_delay=2.0)   # stage 1 blocks until the reel-back finishes
     rig = Rig(r, sim)
     lane = rig.lane(1)
     rig.unit.connect()
     sim.position = 610.0            # past the sensor (600), short of the gears (620)
     before = sim.toolhead_sensor
+    t0 = r.monotonic()
     ok, detail = rig.unit.reel_back(lane)
+    seconds = r.monotonic() - t0
     sim.close()
     return {
         "started_at_sensor": before,
@@ -541,7 +543,10 @@ def sc_eject_part_fed(r):
         "toolhead_clear": not sim.toolhead_sensor,
         "box_reeled_back": sim.position == 0.0,
         "latched_error_cleared": sim.latched_error == P.ST_OK,
-    }, {"detail": detail}
+        # done when stage 1 answers, not after waiting out check-ins
+        "finishes_with_stage1": seconds < 4.0,
+        "no_checkins_needed": sim.count(P.RETRUDE_PROCESS) == 2,
+    }, {"detail": detail, "seconds": round(seconds, 2)}
 
 
 SCENARIOS = {name[3:]: fn for name, fn in globals().items() if name.startswith("sc_")}
