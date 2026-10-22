@@ -454,39 +454,63 @@ class AFCCFSLane(AFCLane):
 
     def _retract_to_box(self) -> tuple[bool, str]:
         """
-        After the cut: pull the filament out of the extruder gears first, then
-        let the box reel the slot back. Asking the box to reel while the gears
-        still hold the filament just stalls its motor.
+        After the cut, stock order (Hi captures, confirmed on a K1):
+          1. RETRUDE stage 0 (START) while the extruder gears still hold the
+             filament: the box pulls the buffer to its empty limit. With the
+             end already free it reels slack and fails RETRUDE_ERR2.
+          2. Extruder retract out of the gears (unload_retract_steps); the
+             now-empty buffer takes up the slack, so the gears don't click.
+          3. RETRUDE stage 1 (FINISH): the box reels the slot back and
+             answers when it has finished.
         """
         unit = self.cfs
-        # Keep the box from feeding while the extruder pulls back.
+        bits = self.slot_bits
         unit.pre_loading(P.PRELOAD_CLOSE)
         unit.set_box_mode(P.MODE_IDLE)
+        self._pause(unit.stage_settle_time)
 
         if unit.unload_tip_wiggle:
             for dist, speed in TIP_WIGGLE_STEPS:
                 self._e_move(dist, speed, "tip wiggle")
+
+        started = self.reactor.monotonic()
+        reply = unit.retrude_stage(bits, 0x00)
+        start_status = P.status_name(reply.status if reply else None)
+        self._trace("retrude_start", status=start_status,
+                    seconds=round(self.reactor.monotonic() - started, 2),
+                    toolhead_sensor=self._toolhead_sensor())
+        if reply is None:
+            return False, "box did not answer RETRUDE start"
+        if not reply.ok:
+            # FINISH still works on its own (it recovered a failed unload on
+            # the K1), so carry on rather than leave filament in the path.
+            self.logger.warning("CFS {}: RETRUDE start returned {}".format(
+                self.name, start_status))
 
         for i, (dist, speed) in enumerate(unit.unload_retract_steps):
             self._e_move(-dist, speed, "unload retract {}".format(i + 1))
             self._trace("retract_step", step=i + 1, mm=dist, speed=speed,
                         toolhead_sensor=self._toolhead_sensor())
 
-        reel_started = self.reactor.monotonic()
-        done, replies = unit.reel_slot(self.slot_bits)
-        reel_seconds = round(self.reactor.monotonic() - reel_started, 2)
-        self._trace("reel", done=done, replies=replies, seconds=reel_seconds,
-                    toolhead_sensor=self._toolhead_sensor())
+        started = self.reactor.monotonic()
+        reply = unit.retrude_stage(bits, 0x01)
+        finish_status = P.status_name(reply.status if reply else None)
+        reel_seconds = round(self.reactor.monotonic() - started, 2)
+        done = reply is not None and reply.ok
+        unit.clear_latched_error()
+        self._trace("reel", done=done, replies=[start_status, finish_status],
+                    seconds=reel_seconds, toolhead_sensor=self._toolhead_sensor())
 
-        # The box answers stage 1 when it's done, but give the sensor a moment.
         deadline = self.reactor.monotonic() + unit.unload_timeout
         while self._toolhead_sensor():
             if self.reactor.monotonic() > deadline:
                 return False, ("toolhead sensor still triggered {:.0f}s after reel-back "
-                               "(box stages {})".format(unit.unload_timeout, "/".join(replies)))
+                               "(box start {}, finish {})".format(
+                                   unit.unload_timeout, start_status, finish_status))
             self._pause(0.5)
         if not done:
-            return False, "box did not confirm reel-back (stages {})".format("/".join(replies))
+            return False, "box did not confirm reel-back (start {}, finish {})".format(
+                start_status, finish_status)
         return True, "reeled back in {:.1f}s".format(reel_seconds)
 
     def cmd_AFC_CFS_TOOL_UNLOAD(self, gcmd: Any) -> None:

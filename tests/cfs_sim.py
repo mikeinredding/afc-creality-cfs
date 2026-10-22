@@ -47,7 +47,8 @@ class FakeCFS:
         self.stage_delays = dict(stage_delays or {})
         self.stage0_feed = stage0_feed        # mm stage 0 pushes toward the toolhead
         self.mute = False                     # True = box not answering yet (booting)
-        self.reel_positions = []              # filament position at each stage-1 reel
+        self.reel_positions = []
+        self.start_positions = []             # filament position at each stage-0 start              # filament position at each stage-1 reel
         self.reel_delay = reel_delay          # seconds RETRUDE stage 1 blocks (K1: 12.4)
 
         self.position = 0.0
@@ -212,6 +213,15 @@ class FakeCFS:
             self.retruding = True
             # Stage 1 is the reel-back: the real box answers once it's done.
             # Filament the extruder still grips can't be reeled.
+            if stage == 0:
+                self.start_positions.append(self.position)
+                if self.position < self.grip_len:
+                    # Observed on a K1: with nothing holding the far end the
+                    # box reels slack, never reaches the buffer's empty
+                    # limit and answers RETRUDE_ERR2 (~300 mm reeled).
+                    self.position = max(0.0, self.position - 300.0)
+                    self.retruding = False
+                    return self._reply(a, P.ST_RETRUDE_ERR2, f.fn)
             if stage == 1:
                 self.reel_positions.append(self.position)
                 if self.position >= self.grip_len:

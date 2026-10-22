@@ -427,6 +427,8 @@ def sc_load_unload(r):
         "cut_before_unload": len(rig.cut_calls()) == 1,
         "toolhead_clear_after_unload": not sim.toolhead_sensor,
         "box_reeled_back": sim.position == 0.0,
+        "start_while_gears_hold": (len(sim.start_positions) == 1
+                                   and sim.start_positions[0] >= sim.grip_len),
         "extruder_released_before_reel": (len(sim.reel_positions) == 1
                                           and sim.reel_positions[0] < sim.grip_len),
         "afc_marked_tool_loaded": afc_tooled_after_load and not tool_state_warnings,

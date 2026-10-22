@@ -39,10 +39,14 @@ connection stop, `IDLE` (clears the latched error the box shows after a load) �
 push the rest of `tool_stn`.
 
 **Unload:** `AFC_CUT` (verified against `cutter_sensor_pin` if set) → park / form
-tip per AFC settings → box idle, pre-loading off → retract the extruder in steps
-(`unload_retract_steps`, 60 mm total by default, like stock's `Tn_retrude -60`) so
-the gears let go → `RETRUDE_PROCESS <slot>` stages 0, 1 (the box reels the slot
-back; stage 1 is answered when it has finished) → toolhead sensor must be clear.
+tip per AFC settings → box idle, pre-loading off → `RETRUDE_PROCESS <slot>` stage 0
+(START) *while the extruder gears still hold the filament* — the box pulls the
+buffer to its empty limit → retract the extruder (`unload_retract_steps`, 60 mm total
+by default, like stock's `Tn_retrude -60`) into the now-slack buffer → stage 1
+(FINISH): the box reels the slot back and answers when it has finished → toolhead
+sensor must be clear. Pulling out of the gears before START makes the box reel slack
+and fail with `RETRUDE_ERR2`; pulling while the buffer is full makes the gears click.
+If START fails anyway, FINISH is still sent (it reels the slot back on its own).
 On the K1-series CFS toolhead the cutter sits below the extruder gears, just
 above the nozzle (~30 mm from the gears, Creality's `buffer_empty_len`), and the
 toolhead sensor is above the gears. So after the cut the gears still hold the

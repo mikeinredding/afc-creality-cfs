@@ -993,13 +993,15 @@ class afcCFS(afcUnit):
         self.set_box_mode(P.MODE_IDLE)
         self.reactor.pause(self.reactor.monotonic() + self.stage_settle_time)
         replies = []
-        reply = None
-        for stage in (0x00, 0x01):
-            reply = self.retrude_stage(bits, stage)
-            replies.append(P.status_name(reply.status if reply else None))
-            if reply is None or not reply.ok:
-                break
+        reply = self.retrude_stage(bits, 0x00)
+        replies.append(P.status_name(reply.status if reply else None))
+        # A failed start (RETRUDE_ERR2 when nothing holds the far end) doesn't
+        # stop the finish from reeling the slot back, so always send it --
+        # unless the box isn't answering at all.
+        if reply is not None:
             self.reactor.pause(self.reactor.monotonic() + 0.3)
+            reply = self.retrude_stage(bits, 0x01)
+            replies.append(P.status_name(reply.status if reply else None))
         done = reply is not None and reply.ok and len(replies) == 2
         self.clear_latched_error()
         return done, replies
