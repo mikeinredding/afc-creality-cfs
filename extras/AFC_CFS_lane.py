@@ -382,32 +382,49 @@ class AFCCFSLane(AFCLane):
 
     # -- tool unload -----------------------------------------------------------
 
-    def _run_cutter_sequence(self) -> bool:
-        """Run AFC's cut macro; when a cutter switch is configured, retry until
-        it reports the blade returned."""
+    def _run_cutter_sequence(self) -> Optional[str]:
+        """
+        Run AFC's cut macro. With a cutter switch configured, verify it: the
+        switch must have fired during the cut (blade reached the end of its
+        travel, if cutter_require_trigger) and be released afterwards. Retries
+        the cut; returns None on success or the reason it failed.
+        """
         if not self.afc.tool_cut:
-            return True
+            return None
         unit = self.cfs
+        reason = None
         for attempt in range(max(unit.load_attempts, 1) + 1):
+            triggers_before = getattr(unit, "cutter_trigger_count", 0)
             self.extruder_obj.estats.increase_cut_total()
             self.afc.gcode.run_script_from_command(
                 "{} EXTRUDER={}".format(self.afc.tool_cut_cmd, self.extruder_obj.name))
             if not unit.cutter_sensor_pin:
                 self._trace("cut", attempt=attempt + 1, verified=False)
-                return True
+                return None
+            # Let the cut moves finish and the switch report arrive
+            toolhead = getattr(self.afc, "toolhead", None)
+            if toolhead is not None and hasattr(toolhead, "wait_moves"):
+                toolhead.wait_moves()
             start = self.reactor.monotonic()
+            self._pause(0.1)
             while self._cutter_engaged():
                 if self.reactor.monotonic() - start > unit.cutter_wait_time:
                     break
                 self._pause(0.01)
             released = not self._cutter_engaged()
-            self._trace("cut", attempt=attempt + 1, verified=True, released=released,
-                        seconds=round(self.reactor.monotonic() - start, 2))
-            if released:
-                return True
-            self.logger.warning("CFS {}: cutter still engaged after cut {}".format(
-                self.name, attempt + 1))
-        return False
+            fired = getattr(unit, "cutter_trigger_count", 0) > triggers_before
+            self._trace("cut", attempt=attempt + 1, verified=True, fired=fired,
+                        released=released, seconds=round(self.reactor.monotonic() - start, 2))
+            if not released:
+                reason = "cutter sensor did not release after cutting"
+            elif not fired and unit.cutter_require_trigger:
+                reason = ("cutter switch never fired during the cut (blade did not reach "
+                          "the end of its travel; check pin_loc_xy / cut_move_dist)")
+            else:
+                return None
+            self.logger.warning("CFS {}: cut {} not confirmed: {}".format(
+                self.name, attempt + 1, reason))
+        return reason
 
     def _run_post_cut_macros(self) -> None:
         if self.afc.park and self.afc.park_cmd:
@@ -481,8 +498,9 @@ class AFCCFSLane(AFCLane):
         if self._cutter_engaged():
             self._fail("cutter sensor is engaged before cutting; check the cutter lever")
             return
-        if not self._run_cutter_sequence():
-            self._fail("cutter sensor did not release after cutting")
+        cut_problem = self._run_cutter_sequence()
+        if cut_problem:
+            self._fail(cut_problem)
             return
         self._run_post_cut_macros()
 

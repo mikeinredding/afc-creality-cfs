@@ -138,10 +138,13 @@ So, in `AFC.cfg`: `park_cmd: AFC_CFS_PARK`, `kick: False`, `wipe: False` (for no
 
 ```ini
 [gcode_macro _AFC_CUT_TIP_VARS]
-variable_pin_loc_xy     : 42, 218.3     # calibrate the Y, see below
+variable_pin_loc_xy     : 42, 218.5     # measured on a K1 Max; calibrate yours, see below
 variable_cut_direction  : "back"
 variable_pin_park_dist  : 6.0
-variable_cut_move_dist  : 6.0           # 218.3 + 6.0 = 224.3, Creality's cut_pos_y
+variable_cut_move_dist  : 6.5           # full cut at 225.0: 1 mm past the switch (224.0)
+variable_retract_length : 0             # AFC default 20 can drag the tip past the blade
+variable_pushback_length: 0             # must stay below retract_length
+variable_cut_count      : 1             # Creality's cut_run_count
 
 [gcode_macro _AFC_POOP_VARS]
 variable_purge_loc_xy   : 148, 225.3
@@ -171,10 +174,18 @@ PA8 switch. Do the equivalent once by hand. Nothing hot, toolhead empty:
 3. Keep stepping 0.5 mm at a time and run `AFC_CFS_STATUS UNIT=CFS_1` after each;
    note the Y where `cutter sensor` turns **triggered**. If it never changes, the pin
    polarity is wrong (try `!nozzle_mcu:PA8`).
-4. Set `cut_move_dist` so `pin_loc_y + cut_move_dist = 224.3`, then `G1 Y212` to
-   back off.
+4. Set `cut_move_dist` so the full cut lands about 1 mm past the trigger point
+   (`pin_loc_y + cut_move_dist = trigger_y + 1`), then `G1 Y212` to back off.
 5. Test with filament loaded by hand and the nozzle hot: `AFC_CUT`. If the filament
-   isn't cut through, raise `cut_move_dist` by 0.5 mm at a time, up to 1.3 mm more.
+   isn't cut through, raise `cut_move_dist` by 0.3 mm at a time, up to trigger + 1.3 mm.
+
+Measured on one K1 Max: arm touches the pin at **Y 218.5**, switch triggers at
+**Y 224.0** (Creality's `cut_pos_y` is 224.3). So the PA8 switch is an
+**end-of-travel** switch, not a contact switch: it closes only when the blade has
+nearly finished its stroke. The unload uses that. With `cutter_sensor_pin` set,
+each cut must make the switch fire *and* release again; if it never fires, the cut
+is retried and then the unload stops before retracting
+(`cutter_require_trigger: True`, the default).
 
 ## Test plan — do these in order, at the printer
 

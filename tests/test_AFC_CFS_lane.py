@@ -40,6 +40,8 @@ def _make_lane(index=1, printing=False, tool_loaded=False, runout_lane=None):
     unit.cutter_sensor_state = False
     unit.load_attempts = 2
     unit.cutter_wait_time = 0.01
+    unit.cutter_trigger_count = 0
+    unit.cutter_require_trigger = True
     unit.read_material_mask = MagicMock(return_value=0b1111)
 
     lane.name = "lane{}".format(index)
@@ -163,8 +165,47 @@ class TestUnloadCutter:
 
     def test_no_cutter_switch_trusts_macro(self):
         lane = _make_lane(tool_loaded=True)
-        assert lane._run_cutter_sequence() is True
+        assert lane._run_cutter_sequence() is None
         lane.afc.gcode.run_script_from_command.assert_called_once_with("AFC_CUT EXTRUDER=extruder")
+
+    def _switch_lane(self, fires=True, require=True):
+        lane = _make_lane(tool_loaded=True)
+        unit = lane.unit_obj
+        unit.cutter_sensor_pin = "nozzle_mcu:PA8"
+        unit.cutter_require_trigger = require
+        cuts = {"n": 0}
+
+        def cut(script):
+            cuts["n"] += 1
+            if fires:       # blade reached end of travel and came back
+                unit.cutter_trigger_count += 1
+            unit.cutter_sensor_state = False
+
+        lane.afc.gcode.run_script_from_command = MagicMock(side_effect=cut)
+        return lane, cuts
+
+    def test_switch_fired_and_released_is_a_good_cut(self):
+        lane, cuts = self._switch_lane(fires=True)
+        assert lane._run_cutter_sequence() is None
+        assert cuts["n"] == 1
+        lane.afc.toolhead.wait_moves.assert_called()
+
+    def test_switch_never_fired_retries_then_fails(self):
+        lane, cuts = self._switch_lane(fires=False)
+        reason = lane._run_cutter_sequence()
+        assert "never fired" in reason
+        assert cuts["n"] == lane.unit_obj.load_attempts + 1
+
+    def test_unload_stops_before_retract_when_cut_unconfirmed(self):
+        lane, _ = self._switch_lane(fires=False)
+        lane.cmd_AFC_CFS_TOOL_UNLOAD(None)
+        assert "never fired" in lane.afc.error.handle_lane_failure.call_args.args[1]
+        lane.unit_obj.retrude_stage.assert_not_called()
+
+    def test_trigger_not_required_accepts_release_only(self):
+        lane, cuts = self._switch_lane(fires=False, require=False)
+        assert lane._run_cutter_sequence() is None
+        assert cuts["n"] == 1
 
 
 class TestUnitConfig:

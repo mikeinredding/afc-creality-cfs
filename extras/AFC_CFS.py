@@ -465,12 +465,18 @@ class afcCFS(afcUnit):
         self.unload_tip_wiggle = config.getboolean("unload_tip_wiggle", False)
         self.unload_timeout = config.getfloat("unload_timeout", 30.0, minval=1.)
         self.cutter_wait_time = config.getfloat("cutter_wait_time", 3.0, minval=0.1)
+        # On the K1 CFS kit the cutter switch only closes near the end of the
+        # blade's travel, so seeing it fire during AFC_CUT proves the cut
+        # completed. When True, a cut where it never fired is retried, then
+        # fails the unload instead of retracting possibly uncut filament.
+        self.cutter_require_trigger = config.getboolean("cutter_require_trigger", True)
 
         # Optional cutter switch on the CFS toolhead kit (Klipper MCU pin)
         self.cutter_sensor_pin = config.get("cutter_sensor_pin", None)
 
     def _init_cfs_runtime(self) -> None:
         self.cutter_sensor_state = False
+        self.cutter_trigger_count = 0
         self.transport = CFSTransport(self.reactor, self.serial_path, self.baud,
                                       self.logger, "CFS {}".format(self.name),
                                       debug=self.protocol_debug)
@@ -530,8 +536,11 @@ class afcCFS(afcUnit):
         self.trace.stop()
 
     def _cutter_callback(self, eventtime, state):
-        self.cutter_sensor_state = bool(state)
-        self.trace.event("cutter_sensor", triggered=self.cutter_sensor_state)
+        state = bool(state)
+        if state and not self.cutter_sensor_state:
+            self.cutter_trigger_count += 1
+        self.cutter_sensor_state = state
+        self.trace.event("cutter_sensor", triggered=state, count=self.cutter_trigger_count)
 
     def _trace_settings(self) -> Dict[str, Any]:
         keys = ("poll_interval", "request_timeout", "load_attempts", "stage_settle_time",
