@@ -420,6 +420,8 @@ def sc_load_unload(r):
         "reached_toolhead": loaded_sensor,
         "stage_order": is_subsequence([0, 4, 5, 6, 7], stages),
         "marked_slot_print": bytes([0x01, P.MODE_PRINT]) in modes,
+        # The box feeds during the print only while the slot stays in print mode
+        "print_mode_kept_after_load": bool(modes) and modes[-1] == bytes([0x01, P.MODE_PRINT]),
         "cleared_latched_error": sim.latched_error == P.ST_OK,
         "primed_then_tool_stn": [m[0] for m in moves_after_load] == [10.0, 5.0, 35.0],
         "cut_before_unload": len(rig.cut_calls()) == 1,

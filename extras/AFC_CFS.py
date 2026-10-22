@@ -530,7 +530,11 @@ class afcCFS(afcUnit):
         self.prime2_length = config.getfloat("prime2_length", 5.0, minval=0.)
         self.prime2_speed = config.getfloat("prime2_speed", 10.0, above=0.)   # mm/min
         self.stage7_arg = config.getint("stage7_arg", 3, minval=0, maxval=255)
-        self.clear_mode_after_load = config.getboolean("clear_mode_after_load", True)
+        # Send SET_BOX_MODE [00][01] after the load to clear the EXTRUDE_ERR8 the
+        # box latches. Those bytes are the feed/change-mode command and take the
+        # slot back out of print mode, so the box stops feeding during the print.
+        # Leave False; only for experiments.
+        self.clear_mode_after_load = config.getboolean("clear_mode_after_load", False)
 
         # --- Tool unload sequence (cut, extruder retract, box reel-back) ---
         # Extruder retract steps after the cut, "distance:speed_mm_per_min",

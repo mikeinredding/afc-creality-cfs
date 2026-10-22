@@ -307,8 +307,9 @@ class AFCCFSLane(AFCLane):
                     stage7=self.last_load_report["stage7"], stage7_arg=unit.stage7_arg,
                     toolhead_sensor=self._toolhead_sensor())
 
-        # Mark this slot as the active PRINT slot. Without this the box never
-        # leaves its mid-load state and the next slot change fails.
+        # Mark this slot as the active PRINT slot: the box then runs its own
+        # buffer feed loop for the print. Nothing may send SET_BOX_MODE
+        # [00][01] (feed/change mode) after this until the next unload.
         unit.set_box_mode(P.MODE_PRINT, bits)
         unit.tighten_up(False)
         unit.connection_motor(P.CONN_STOP)
