@@ -39,6 +39,7 @@ SCENARIOS = [
     "slow_stage0",
     "late_reply_resync",
     "eject_part_fed",
+    "unload_still_gripped",
 ]
 
 

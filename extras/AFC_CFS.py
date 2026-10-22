@@ -514,11 +514,12 @@ class afcCFS(afcUnit):
         self.stage7_arg = config.getint("stage7_arg", 3, minval=0, maxval=255)
         self.clear_mode_after_load = config.getboolean("clear_mode_after_load", True)
 
-        # --- Tool unload sequence (cut, RETRUDE_PROCESS, chunked retract) ---
+        # --- Tool unload sequence (cut, extruder retract, box reel-back) ---
         # Extruder retract steps after the cut, "distance:speed_mm_per_min",
-        # with a box check-in before each step. Stock: 6 x 15mm, 90 then 500 mm/min.
+        # run before the box reels so the gears have let go of the filament.
+        # 60mm total, like stock's Tn_retrude -60.
         self.unload_retract_steps = self._parse_steps(config.get(
-            "unload_retract_steps", "15:90, 15:90, 15:500, 15:500, 15:500, 15:500"))
+            "unload_retract_steps", "15:90, 15:90, 15:500, 15:500"))
         # Optional tip-forming wiggle before retracting. Not needed with a cutter.
         self.unload_tip_wiggle = config.getboolean("unload_tip_wiggle", False)
         self.unload_timeout = config.getfloat("unload_timeout", 30.0, minval=1.)
@@ -911,21 +912,7 @@ class afcCFS(afcUnit):
         self.trace.event("eject_start", lane=lane.name, slot=P.slot_letter(lane.index))
         started = self.reactor.monotonic()
         with self.operation():
-            self.pre_loading(P.PRELOAD_CLOSE)
-            self.set_box_mode(P.MODE_IDLE)
-            replies = []
-            reply = None
-            for stage in (0x00, 0x01):
-                reply = self.retrude_stage(bits, stage)
-                replies.append(P.status_name(reply.status if reply else None))
-                if reply is None or not reply.ok:
-                    break
-                self.reactor.pause(self.reactor.monotonic() + 0.3)
-            # Stage 1 is the reel-back itself and is only answered once it has
-            # finished (12.4s for 1.5m on a K1), so its OK means "done".
-            # Generic check-ins just answer OK while idle and say nothing.
-            done = reply is not None and reply.ok and len(replies) == 2
-            self.clear_latched_error()
+            done, replies = self.reel_slot(bits)
         toolhead_clear = not lane.get_toolhead_pre_sensor_state()
         seconds = round(self.reactor.monotonic() - started, 2)
         ok = toolhead_clear and done
@@ -934,6 +921,30 @@ class afcCFS(afcUnit):
             "clear" if toolhead_clear else "STILL TRIGGERED")
         self.trace.event("eject_end", lane=lane.name, ok=ok, detail=detail, seconds=seconds)
         return ok, detail
+
+    def reel_slot(self, bits: int) -> tuple:
+        """
+        Reel a slot back into the box: pre-loading off, box idle, then
+        RETRUDE_PROCESS stage 0 and stage 1. The caller holds operation().
+        Stage 1 is the reel-back itself and is only answered once it has
+        finished (12.4s for 1.5m on a K1), so its OK means "done"; generic
+        check-ins just answer OK while idle and say nothing.
+        Returns (done, [stage reply names]).
+        """
+        self.pre_loading(P.PRELOAD_CLOSE)
+        self.set_box_mode(P.MODE_IDLE)
+        self.reactor.pause(self.reactor.monotonic() + self.stage_settle_time)
+        replies = []
+        reply = None
+        for stage in (0x00, 0x01):
+            reply = self.retrude_stage(bits, stage)
+            replies.append(P.status_name(reply.status if reply else None))
+            if reply is None or not reply.ok:
+                break
+            self.reactor.pause(self.reactor.monotonic() + 0.3)
+        done = reply is not None and reply.ok and len(replies) == 2
+        self.clear_latched_error()
+        return done, replies
 
     def move_to_hub(self, lane, dist, dir, use_homing=True, speed_mode=None, assist_active=None):
         self.logger.debug("CFS {}: move_to_hub not supported, box handles feeding".format(self.name))

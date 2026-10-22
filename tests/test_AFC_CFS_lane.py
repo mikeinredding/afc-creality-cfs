@@ -162,6 +162,7 @@ class TestUnloadCutter:
         lane.cmd_AFC_CFS_TOOL_UNLOAD(None)
         assert "did not release" in lane.afc.error.handle_lane_failure.call_args.args[1]
         lane.unit_obj.retrude_stage.assert_not_called()
+        lane.unit_obj.reel_slot.assert_not_called()
 
     def test_no_cutter_switch_trusts_macro(self):
         lane = _make_lane(tool_loaded=True)
@@ -201,6 +202,7 @@ class TestUnloadCutter:
         lane.cmd_AFC_CFS_TOOL_UNLOAD(None)
         assert "never fired" in lane.afc.error.handle_lane_failure.call_args.args[1]
         lane.unit_obj.retrude_stage.assert_not_called()
+        lane.unit_obj.reel_slot.assert_not_called()
 
     def test_trigger_not_required_accepts_release_only(self):
         lane, cuts = self._switch_lane(fires=False, require=False)

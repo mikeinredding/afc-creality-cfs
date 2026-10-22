@@ -46,6 +46,7 @@ class FakeCFS:
         # and handles one command at a time, so later commands queue.
         self.stage_delays = dict(stage_delays or {})
         self.stage0_feed = stage0_feed        # mm stage 0 pushes toward the toolhead
+        self.reel_positions = []              # filament position at each stage-1 reel
         self.reel_delay = reel_delay          # seconds RETRUDE stage 1 blocks (K1: 12.4)
 
         self.position = 0.0
@@ -208,7 +209,13 @@ class FakeCFS:
             self.retruding = True
             # Stage 1 is the reel-back: the real box answers once it's done.
             # Filament the extruder still grips can't be reeled.
-            if stage == 1 and self.position < self.grip_len:
+            if stage == 1:
+                self.reel_positions.append(self.position)
+                if self.position >= self.grip_len:
+                    # Modelled: the reel motor stalls against the gears and the
+                    # box reports a retrude error (real status code unconfirmed).
+                    self.retruding = False
+                    return self._reply(a, P.ST_RETRUDE_ERR2, f.fn)
                 self.position = 0.0
                 self.retruding = False
                 self.connected_mask = 0

@@ -39,9 +39,12 @@ connection stop, `IDLE` (clears the latched error the box shows after a load) �
 push the rest of `tool_stn`.
 
 **Unload:** `AFC_CUT` (verified against `cutter_sensor_pin` if set) → park / form
-tip per AFC settings → `RETRUDE_PROCESS <slot>` stages 0, 1 → retract the extruder
-in steps (`unload_retract_steps`), checking in with the box (`RETRUDE_PROCESS 0,0`)
-before each one → wait for the toolhead sensor to clear.
+tip per AFC settings → box idle, pre-loading off → retract the extruder in steps
+(`unload_retract_steps`, 60 mm total by default, like stock's `Tn_retrude -60`) so
+the gears let go → `RETRUDE_PROCESS <slot>` stages 0, 1 (the box reels the slot
+back; stage 1 is answered when it has finished) → toolhead sensor must be clear.
+AFC is told the tool is loaded/unloaded even when `AFC_CFS_TOOL_LOAD`/`UNLOAD`
+are run by hand.
 
 ## Setup on a K1 / K1 Max with Simple AF
 

@@ -380,6 +380,7 @@ class AFCCFSLane(AFCLane):
             self.afc.move_e_pos(remaining, self.extruder_obj.tool_load_speed,
                                 "CFS tool_stn", wait_tool=True)
         self.loaded_to_hub = True
+        self._mark_tool_state(loaded=True)
         self._trace("load_end", ok=True, detail=detail, attempts=attempts_used,
                     tool_stn_push=round(max(remaining, 0), 2),
                     seconds=round(self.reactor.monotonic() - started, 2))
@@ -441,44 +442,41 @@ class AFCCFSLane(AFCLane):
                 self.afc.gcode.run_script_from_command(self.afc.form_tip_cmd)
 
     def _retract_to_box(self) -> tuple[bool, str]:
+        """
+        After the cut: pull the filament out of the extruder gears first, then
+        let the box reel the slot back. Asking the box to reel while the gears
+        still hold the filament just stalls its motor.
+        """
         unit = self.cfs
-        bits = self.slot_bits
-
+        # Keep the box from feeding while the extruder pulls back.
         unit.pre_loading(P.PRELOAD_CLOSE)
         unit.set_box_mode(P.MODE_IDLE)
-        self._pause(unit.stage_settle_time)
-        unit.retrude_stage(bits, 0x00)
-        self._pause(0.5)
-        unit.retrude_stage(bits, 0x01)
 
         if unit.unload_tip_wiggle:
             for dist, speed in TIP_WIGGLE_STEPS:
                 self._e_move(dist, speed, "tip wiggle")
 
         for i, (dist, speed) in enumerate(unit.unload_retract_steps):
-            # Check in with the box before every chunk, like stock does.
-            reply = unit.retrude_stage(0x00, 0x00)
-            self._trace("retract_step", step=i + 1, mm=dist, speed=speed,
-                        box=P.status_name(reply.status if reply else None),
-                        toolhead_sensor=self._toolhead_sensor())
-            if reply is None or not reply.ok:
-                if not self._toolhead_sensor():
-                    unit.clear_latched_error()
-                    return True, "toolhead clear after {} retract step(s)".format(i)
-                if reply is None:
-                    return False, "box stopped answering during unload"
             self._e_move(-dist, speed, "unload retract {}".format(i + 1))
+            self._trace("retract_step", step=i + 1, mm=dist, speed=speed,
+                        toolhead_sensor=self._toolhead_sensor())
 
+        reel_started = self.reactor.monotonic()
+        done, replies = unit.reel_slot(self.slot_bits)
+        reel_seconds = round(self.reactor.monotonic() - reel_started, 2)
+        self._trace("reel", done=done, replies=replies, seconds=reel_seconds,
+                    toolhead_sensor=self._toolhead_sensor())
+
+        # The box answers stage 1 when it's done, but give the sensor a moment.
         deadline = self.reactor.monotonic() + unit.unload_timeout
         while self._toolhead_sensor():
             if self.reactor.monotonic() > deadline:
-                unit.clear_latched_error()
-                return False, "toolhead sensor still triggered {:.0f}s after retract".format(
-                    unit.unload_timeout)
-            unit.retrude_stage(0x00, 0x00)
+                return False, ("toolhead sensor still triggered {:.0f}s after reel-back "
+                               "(box stages {})".format(unit.unload_timeout, "/".join(replies)))
             self._pause(0.5)
-        unit.clear_latched_error()
-        return True, "toolhead clear"
+        if not done:
+            return False, "box did not confirm reel-back (stages {})".format("/".join(replies))
+        return True, "reeled back in {:.1f}s".format(reel_seconds)
 
     def cmd_AFC_CFS_TOOL_UNLOAD(self, gcmd: Any) -> None:
         """
@@ -523,6 +521,25 @@ class AFCCFSLane(AFCLane):
             self._fail("unload failed: {}".format(detail))
             return
         self.loaded_to_hub = False
+        self._mark_tool_state(loaded=False)
+
+    def _mark_tool_state(self, loaded: bool) -> None:
+        """
+        Record the tool state in AFC. AFC's own TOOL_LOAD/TOOL_UNLOAD flow
+        does this after our custom command returns, but running
+        AFC_CFS_TOOL_LOAD/UNLOAD directly would otherwise leave AFC thinking
+        nothing (or the old lane) is in the toolhead. Setting it twice is
+        harmless.
+        """
+        try:
+            if loaded:
+                self.set_tool_loaded(normal_toolchange=True)
+            else:
+                self.set_tool_unloaded(normal_toolchange=True)
+            self.afc.save_vars()
+        except Exception as e:
+            self.logger.warning("CFS {}: could not record tool state: {}".format(
+                self.name, e))
 
     def cmd_AFC_CFS_EJECT(self, gcmd: Any) -> None:
         """

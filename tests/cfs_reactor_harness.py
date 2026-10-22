@@ -134,6 +134,7 @@ class FakeExtruder:
         self.tool_load_speed = 25.0
         self.estats = MagicMock()
         self.moved = []
+        self.lane_loaded = None
 
     @property
     def tool_start_state(self):
@@ -181,6 +182,8 @@ class Rig:
         unit._init_cfs_runtime()
         unit.on_filament_insert = MagicMock()
         unit.on_filament_remove = MagicMock()
+        unit.lane_tool_loaded = MagicMock()      # LED handling, needs a full lane
+        unit.lane_tool_unloaded = MagicMock()
         self.unit = unit
 
     def lane(self, index):
@@ -202,6 +205,7 @@ class Rig:
         lane.status = None
         lane.tool_loaded = False
         lane.runout_lane = None
+        lane.spool_id = None
         lane._afc_prep_done = True
         self.unit.lanes[lane.name] = lane
         return lane
@@ -328,6 +332,10 @@ def sc_load_unload(r):
     modes = [d for f, d in sim.log if f == P.SET_BOX_MODE]
     after_load_position = sim.position
     moves_after_load = list(rig.extruder.moved)
+    afc_tooled_after_load = (lane.tool_loaded
+                             and getattr(rig.extruder, "lane_loaded", None) == lane.name)
+    tool_state_warnings = [m for m in rig.logger.lines
+                           if "could not record tool state" in m]
 
     _unload(rig, lane)
     dog.stop()
@@ -342,11 +350,17 @@ def sc_load_unload(r):
         "cut_before_unload": len(rig.cut_calls()) == 1,
         "toolhead_clear_after_unload": not sim.toolhead_sensor,
         "box_reeled_back": sim.position == 0.0,
+        "extruder_released_before_reel": (len(sim.reel_positions) == 1
+                                          and sim.reel_positions[0] < sim.grip_len),
+        "afc_marked_tool_loaded": afc_tooled_after_load and not tool_state_warnings,
+        "afc_marked_tool_unloaded": (not lane.tool_loaded
+                                     and getattr(rig.extruder, "lane_loaded", None) is None),
         "connection_motor_stopped": sim.conn_action == P.CONN_STOP,
         "reactor_never_stalled": dog.never_stalled,
     }, {"max_gap_ms": round(dog.max_gap * 1000, 2), "stages": stages,
         "position_after_load": after_load_position, "failures": rig.failures,
-        "report": lane.last_load_report}
+        "report": lane.last_load_report, "tool_state_warnings": tool_state_warnings,
+        "lane_loaded": getattr(rig.extruder, "lane_loaded", None)}
 
 
 def sc_slot_switch(r):
@@ -547,6 +561,28 @@ def sc_eject_part_fed(r):
         "finishes_with_stage1": seconds < 4.0,
         "no_checkins_needed": sim.count(P.RETRUDE_PROCESS) == 2,
     }, {"detail": detail, "seconds": round(seconds, 2)}
+
+
+def sc_unload_still_gripped(r):
+    """Retract too short to leave the gears: the reel-back fails and the
+    unload reports it instead of claiming success or hanging."""
+    sim = FakeCFS()
+    rig = Rig(r, sim, unload_retract_steps="5:600", unload_timeout=1.0)
+    lane = rig.lane(1)
+    dog = Watchdog(r)
+    rig.unit.connect()
+    _load(rig, lane)
+    _unload(rig, lane)
+    dog.stop()
+    sim.close()
+    return {
+        "unload_failed": len(rig.failures) == 1,
+        "reported_reel_problem": bool(rig.failures) and "unload failed" in rig.failures[0],
+        "box_kept_filament_out": sim.position > 0.0,
+        "afc_still_tool_loaded": lane.tool_loaded,
+        "reactor_never_stalled": dog.never_stalled,
+    }, {"failures": rig.failures, "max_gap_ms": round(dog.max_gap * 1000, 2),
+        "reel_positions": sim.reel_positions}
 
 
 SCENARIOS = {name[3:]: fn for name, fn in globals().items() if name.startswith("sc_")}
