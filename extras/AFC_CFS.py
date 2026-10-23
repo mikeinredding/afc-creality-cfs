@@ -542,11 +542,11 @@ class afcCFS(afcUnit):
         self.clear_mode_after_load = config.getboolean("clear_mode_after_load", False)
 
         # --- Tool unload sequence (cut, extruder retract, box reel-back) ---
-        # Extruder retract steps after the cut, "distance:speed_mm_per_min",
-        # run before the box reels so the gears have let go of the filament.
-        # 60mm total, like stock's Tn_retrude -60.
+        # Extruder retract steps after RETRUDE start, "distance:speed_mm_per_min",
+        # pulling out of the gears before the box reels. 60mm total like stock's
+        # Tn_retrude -60; the first 15mm slower while the cut end is still warm.
         self.unload_retract_steps = self._parse_steps(config.get(
-            "unload_retract_steps", "15:90, 15:90, 15:500, 15:500"))
+            "unload_retract_steps", "15:600, 45:1800"))
         # Optional tip-forming wiggle before retracting. Not needed with a cutter.
         self.unload_tip_wiggle = config.getboolean("unload_tip_wiggle", False)
         self.unload_timeout = config.getfloat("unload_timeout", 30.0, minval=1.)
