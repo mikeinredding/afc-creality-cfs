@@ -487,6 +487,11 @@ class afcCFS(afcUnit):
         self.baud = config.getint("baud", P.DEFAULT_BAUD)
         self.box_addr = config.getint("box_addr", 1, minval=1, maxval=4)
         self.poll_interval = config.getfloat("poll_interval", 1.0, minval=0.2)
+        # Stock firmware sends CMD_ONLINE_CHECK every 1.5s (10s while printing);
+        # without it the box shows its "no printer" light (red, cycling).
+        self.heartbeat_interval = config.getfloat("heartbeat_interval", 1.5, minval=0.5)
+        self.heartbeat_interval_printing = config.getfloat(
+            "heartbeat_interval_printing", 10.0, minval=0.5)
         self.request_timeout = config.getfloat("request_timeout", 0.8, minval=0.05)
         # Motor commands (EXTRUDE/RETRUDE_PROCESS stages) are only answered once
         # the motion finishes. On a K1: EXTRUDE stage 0 ~3.7s, RETRUDE stage 1
@@ -581,6 +586,7 @@ class afcCFS(afcUnit):
         self.box_status: Optional[int] = None
         self._consecutive_failures = 0
         self._last_reconnect_attempt = 0.0
+        self._last_heartbeat = 0.0
         self._boot_wait_done = False
         self._operation_depth = 0
         self._poll_timer = None
@@ -633,6 +639,30 @@ class afcCFS(afcUnit):
                 "prime2_speed", "stage7_arg", "clear_mode_after_load",
                 "unload_retract_steps", "unload_tip_wiggle", "unload_timeout")
         return {k: getattr(self, k, None) for k in keys}
+
+    def heartbeat(self) -> Optional[P.Frame]:
+        """The stock host's periodic CMD_ONLINE_CHECK, which keeps the box's
+        connection light happy."""
+        reply = self.transport.request(self.box_addr, P.CMD_ONLINE_CHECK, b"",
+                                       status=P.REQ_STATUS_ADDRESSING,
+                                       timeout=self.request_timeout)
+        if reply is None:
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= self.offline_after:
+                self._set_offline("no reply to heartbeat")
+        else:
+            self._consecutive_failures = 0
+        return reply
+
+    def _is_printing(self) -> bool:
+        printer = getattr(self, "printer", None)
+        stats = printer.lookup_object("print_stats", None) if printer is not None else None
+        if stats is None:
+            return False
+        try:
+            return stats.get_status(self.reactor.monotonic()).get("state") == "printing"
+        except Exception:
+            return False
 
     def _trace_print_state(self) -> None:
         """Record print start/stop so trace events can be tied to a job."""
@@ -834,6 +864,11 @@ class afcCFS(afcUnit):
 
         self.transport.quiet = not self.trace_polls
         try:
+            interval = (self.heartbeat_interval_printing if self._is_printing()
+                        else self.heartbeat_interval)
+            if eventtime - self._last_heartbeat >= interval:
+                self._last_heartbeat = eventtime
+                self.heartbeat()
             mask = self.read_material_mask()
             if mask is not None:
                 self._mirror_presence(mask)

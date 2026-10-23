@@ -300,6 +300,7 @@ def sc_poll_presence(r):
     wait(r, 0.6)
     after = [l._cfs_present_last for l in lanes]
     rig.unit._cfs_handle_disconnect()
+    heartbeats = sim.count(P.CMD_ONLINE_CHECK)
     sim.close()
     return {
         "initial_presence": initial == [True, True, False],
@@ -307,7 +308,9 @@ def sc_poll_presence(r):
         "insert_marks_loaded": lanes[2].set_loaded.called,
         "insert_event_sent": rig.unit.on_filament_insert.called,
         "removal_marks_unloaded": lanes[0].set_unloaded.called,
-    }, {"initial": initial, "after": after}
+        # 1.2s of polling at the default 1.5s heartbeat: at least one, not every poll
+        "heartbeat_sent": 1 <= heartbeats <= 2,
+    }, {"initial": initial, "after": after, "heartbeats": heartbeats}
 
 
 def _prep_lane(rig, lane):
