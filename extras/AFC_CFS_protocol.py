@@ -111,6 +111,10 @@ CONN_EXTRUDE = 0x01
 CONN_RETRUDE = 0x02
 
 # SET_PRE_LOADING action byte
+# GET_BOX_STATE data[3]: 0x02 while a slot is in print mode (SET_BOX_MODE
+# [slot][PRINT]), 0x00 in feed/change mode
+BOX_STATE_PRINT_LOCKED = 0x02
+
 PRELOAD_CLOSE = 0x00
 PRELOAD_OPEN = 0x01
 PRELOAD_RUN = 0x02

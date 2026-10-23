@@ -284,6 +284,28 @@ class TestSystemTest:
         assert lane1._load_state is False and lane2._load_state is True
         assert lane1.loaded_to_hub is True and lane2.loaded_to_hub is True
 
+    def _tooled(self, unit, lane, box_b3):
+        lane.tool_loaded = True
+        lane.extruder_obj.lane_loaded = lane.name
+        unit.request = MagicMock(return_value=P.Frame(1, P.ST_OK, P.GET_BOX_STATE,
+                                                      bytes([0x18, 0x1c, 0x00, box_b3])))
+        unit.set_box_mode = MagicMock()
+        unit.trace = MagicMock()
+
+    def test_tooled_lane_restores_lost_print_mode(self):
+        unit = self._unit(mask=0b0001)
+        lane = self._lane(1)
+        self._tooled(unit, lane, 0x00)
+        unit.system_Test(lane, 0, False, False)
+        unit.set_box_mode.assert_called_once_with(P.MODE_PRINT, 0b0001)
+
+    def test_tooled_lane_keeps_existing_print_mode(self):
+        unit = self._unit(mask=0b0001)
+        lane = self._lane(1)
+        self._tooled(unit, lane, P.BOX_STATE_PRINT_LOCKED)
+        unit.system_Test(lane, 0, False, False)
+        unit.set_box_mode.assert_not_called()
+
     def test_empty_slot_marks_not_ready(self):
         unit = self._unit(mask=0b0001)
         lane = self._lane(2, with_map_to_string=False)

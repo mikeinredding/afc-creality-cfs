@@ -945,6 +945,27 @@ class afcCFS(afcUnit):
         cur_lane.set_afc_prep_done()
         return self.online
 
+    def ensure_print_mode(self, lane: AFCLane) -> None:
+        """
+        A lane AFC has loaded in the toolhead needs its slot in print mode, or
+        the box won't feed during the print. A box that restarted (or was
+        left in change mode) has lost that, so restore it at PREP.
+        """
+        if not self.online:
+            return
+        reply = self.request(P.GET_BOX_STATE)
+        if reply is None or len(reply.data) < 4:
+            return
+        if reply.data[3] == P.BOX_STATE_PRINT_LOCKED:
+            return
+        bits = P.slot_bit(lane.index)
+        self.set_box_mode(P.MODE_PRINT, bits)
+        self.trace.event("print_mode_restored", lane=lane.name,
+                         slot=P.slot_letter(lane.index), box_state=reply.data.hex())
+        self.logger.info("CFS {}: slot {} is loaded in the toolhead; set print mode "
+                         "again (box state was {})".format(
+                             self.name, P.slot_letter(lane.index), reply.data.hex()))
+
     def _wait_for_box(self) -> None:
         """Keep trying to reach a box that is still booting, up to boot_wait."""
         if self.boot_wait <= 0:
@@ -969,6 +990,7 @@ class afcCFS(afcUnit):
         if (cur_lane.tool_loaded
                 and cur_lane.extruder_obj is not None
                 and cur_lane.extruder_obj.lane_loaded == cur_lane.name):
+            self.ensure_print_mode(cur_lane)
             if self.afc.current == cur_lane.name:
                 self.lane_tool_loaded(cur_lane)
             else:
