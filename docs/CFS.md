@@ -149,7 +149,13 @@ redo the cutter calibration):
 | `Tn_extrude_velocity` | 360 mm/min | `purge_spd: 6` (mm/s) |
 | `clean_left/right_pos` | X 153.5–178, Y 225.3 | wiper, if you enable `wipe` later: `brush_loc: 165.75, 225.3, -1`, `brush_width: 24.5` |
 
-So, in `AFC.cfg`: `park_cmd: AFC_CFS_PARK`, `kick: False`, `wipe: False` (for now). In
+So, in `AFC.cfg`: `park_cmd: AFC_CFS_PARK`, `kick: False`, `wipe: False` (for now),
+`post_load_macro: AFC_CFS_LEAVE_PURGE` and `post_unload_macro: AFC_CFS_LEAVE_PURGE`.
+The last two matter: after a load AFC restores the saved position Z first, so
+without them the bed rises to the saved height + `z_hop` with the toolhead still
+over the chute and comes up into the purge hopper (seen on a K1), then the
+toolhead leaves diagonally. `AFC_CFS_LEAVE_PURGE` moves straight forward to
+`safe_y` first and waits for the hopper to spring back. In
 `AFC_Macro_Vars.cfg`:
 
 ```ini
