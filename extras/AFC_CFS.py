@@ -25,7 +25,7 @@ import termios
 import threading
 import time
 import traceback
-from typing import TYPE_CHECKING, Any, Dict, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 import configfile
 
@@ -433,6 +433,108 @@ class CFSTransport:
         return self._mutex.test()
 
 
+class CFSBus:
+    """
+    One RS-485 chain: up to four CFS boxes daisy-chained behind one USB
+    adapter (printer -> box 1 IN, box 1 OUT -> box 2 IN, ... -> buffer).
+    Every [AFC_CFS] unit on the same serial port shares this bus and its
+    transport, so requests to different boxes take turns on the wire.
+
+    Boxes lose their address when they power off and answer broadcast
+    discovery one at a time until addressed. Discovery gives each box the
+    box_addr of the unit configured with its box_uid, so the lanes can't
+    swap boxes when the discovery order changes.
+    """
+
+    _buses: Dict[str, "CFSBus"] = {}
+
+    @classmethod
+    def get(cls, reactor: Any, path: str, baud: int, logger: Any,
+            debug: bool = False) -> "CFSBus":
+        bus = cls._buses.get(path)
+        # Klipper builds a new reactor on RESTART; don't reuse a stale bus
+        if bus is None or bus.reactor is not reactor:
+            bus = cls(reactor, path, baud, logger, debug)
+            cls._buses[path] = bus
+        elif bus.transport.baud != baud:
+            raise ValueError("serial {}: every CFS on one chain must use the same baud".format(path))
+        return bus
+
+    def __init__(self, reactor: Any, path: str, baud: int, logger: Any, debug: bool) -> None:
+        self.reactor = reactor
+        self.logger = logger
+        self.transport = CFSTransport(reactor, path, baud, logger,
+                                      "CFS bus {}".format(path), debug=debug)
+        self.units: List[Any] = []
+
+    def register(self, unit: Any) -> None:
+        for other in self.units:
+            if other.box_addr == unit.box_addr:
+                raise ValueError(
+                    "CFS {} and {} are both box_addr {} on {}; give each box on a chain "
+                    "its own box_addr (1-4)".format(other.name, unit.name, unit.box_addr,
+                                                    self.transport.path))
+            if unit.box_uid and other.box_uid == unit.box_uid:
+                raise ValueError("CFS {} and {} have the same box_uid".format(other.name, unit.name))
+        if self.units and (not unit.box_uid or not all(u.box_uid for u in self.units)):
+            self.logger.warning(
+                "CFS {}: more than one box on {} without box_uid set; boxes are then "
+                "addressed in discovery order, which can change. Set box_uid on each "
+                "(AFC_CFS_STATUS shows it).".format(unit.name, self.transport.path))
+        self.units.append(unit)
+
+    def unit_for_uid(self, uid: bytes) -> Optional[Any]:
+        for unit in self.units:
+            if unit.box_uid and unit.box_uid == uid:
+                return unit
+        return None
+
+    def discover(self, timeout: float = 1.5) -> List[tuple]:
+        """
+        Address every unaddressed box on the chain. Each GET_SLAVE_INFO
+        broadcast is answered by one unaddressed box; giving it an address
+        silences it, so repeat until nobody answers. Returns [(uid, addr)].
+        """
+        assigned: List[tuple] = []
+        taken = set()
+        for _ in range(4):
+            reply = self.transport.request(P.BROADCAST_BOXES, P.CMD_GET_SLAVE_INFO,
+                                           bytes([P.BROADCAST_BOXES, P.BROADCAST_BOXES]),
+                                           status=P.REQ_STATUS_ADDRESSING,
+                                           timeout=timeout, retries=1)
+            if reply is None or len(reply.data) < 14:
+                break
+            uid = bytes(reply.data[2:14])
+            unit = self.unit_for_uid(uid)
+            if unit is None:
+                # Single-box setups don't set box_uid: the one unit without a
+                # uid that hasn't got a box yet takes it.
+                free = [u for u in self.units if not u.box_uid and u.box_addr not in taken]
+                unit = free[0] if free else None
+            if unit is not None:
+                addr = unit.box_addr
+            else:
+                used = {u.box_addr for u in self.units} | taken
+                spare = [a for a in range(1, 5) if a not in used]
+                if not spare:
+                    self.logger.warning("CFS bus {}: no free address for box uid {}".format(
+                        self.transport.path, uid.hex()))
+                    break
+                addr = spare[0]
+                self.logger.warning(
+                    "CFS bus {}: box uid {} isn't in any [AFC_CFS] section (box_uid); "
+                    "parked at address {}".format(self.transport.path, uid.hex(), addr))
+            self.transport.request(P.BROADCAST_BOXES, P.CMD_SET_SLAVE_ADDR,
+                                   bytes([addr]) + uid, status=P.REQ_STATUS_ADDRESSING,
+                                   timeout=timeout)
+            taken.add(addr)
+            assigned.append((uid, addr))
+            self.logger.info("CFS bus {}: box uid {} -> address {}{}".format(
+                self.transport.path, uid.hex(), addr,
+                " ({})".format(unit.name) if unit is not None else ""))
+        return assigned
+
+
 def set_lane_sensors(lane, present: bool, connected_mask) -> None:
     """
     Map the box's sensors onto AFC's lane model for a virtual hub:
@@ -466,7 +568,10 @@ class afcCFS(afcUnit):
             buttons = self.printer.load_object(config, "buttons")
             buttons.register_buttons([self.cutter_sensor_pin], self._cutter_callback)
 
-        self._init_cfs_runtime()
+        try:
+            self._init_cfs_runtime()
+        except ValueError as e:      # two units on one chain configured to clash
+            raise config.error("[AFC_CFS {}]: {}".format(self.name, e))
 
         self.printer.register_event_handler("klippy:ready", self._cfs_handle_ready)
         self.printer.register_event_handler("klippy:disconnect", self._cfs_handle_disconnect)
@@ -486,6 +591,13 @@ class afcCFS(afcUnit):
         self.serial_path = config.get("serial")
         self.baud = config.getint("baud", P.DEFAULT_BAUD)
         self.box_addr = config.getint("box_addr", 1, minval=1, maxval=4)
+        # 12-byte box ID (24 hex digits, AFC_CFS_STATUS shows it). Needed with
+        # more than one box on a chain so each section always gets its box.
+        uid = (config.get("box_uid", "") or "").replace(":", "").replace(" ", "").lower()
+        if uid and (len(uid) != 24 or any(c not in "0123456789abcdef" for c in uid)):
+            msg = "box_uid must be 24 hex digits, got '{}'".format(uid)
+            raise config.error(msg) if hasattr(config, "error") else ValueError(msg)
+        self.box_uid: Optional[bytes] = bytes.fromhex(uid) if uid else None
         self.poll_interval = config.getfloat("poll_interval", 1.0, minval=0.2)
         # Stock firmware sends CMD_ONLINE_CHECK every 1.5s (10s while printing);
         # without it the box shows its "no printer" light (red, cycling).
@@ -563,13 +675,19 @@ class afcCFS(afcUnit):
     def _init_cfs_runtime(self) -> None:
         self.cutter_sensor_state = False
         self.cutter_trigger_count = 0
-        self.transport = CFSTransport(self.reactor, self.serial_path, self.baud,
-                                      self.logger, "CFS {}".format(self.name),
-                                      debug=self.protocol_debug)
-        self.transport.resync_timeout = self.resync_timeout
+        self.bus = CFSBus.get(self.reactor, self.serial_path, self.baud, self.logger,
+                              debug=self.protocol_debug)
+        self.bus.register(self)
+        self.transport = self.bus.transport
+        self.transport.resync_timeout = max(self.transport.resync_timeout, self.resync_timeout)
         self.trace = CFSTrace(self.trace_file, int(self.trace_max_size * 1024 * 1024),
                               self.trace_backups, self.logger)
-        self.transport.trace = self.trace
+        # The wire trace goes to the first unit on the chain that records one
+        if self.trace_file and (self.transport.trace is None or not self.transport.trace.enabled):
+            self.transport.trace = self.trace
+        self.seen_uid: Optional[bytes] = None
+        # Set at connect for a box without its own cutter_sensor_pin
+        self.cutter_source: Optional[Any] = None
         if self.trace_file:
             self.trace.start()
             self.trace.event("trace_start", unit=self.name, serial=self.serial_path,
@@ -610,6 +728,9 @@ class afcCFS(afcUnit):
 
     def handle_connect(self):
         super().handle_connect()
+        if not self.cutter_sensor_pin:
+            # One toolhead cutter: boxes on the chain share whichever box has the pin
+            self.cutter_source = next((u for u in self.bus.units if u.cutter_sensor_pin), None)
         self.logo = '<span class=success--text>CFS Ready</span>\n'
         self.logo_error = '<span class=error--text>CFS Not Ready</span>\n'
 
@@ -685,44 +806,48 @@ class afcCFS(afcUnit):
 
     def connect(self) -> bool:
         """
-        Open the port and make sure the box answers at box_addr.
-
-        A CFS remembers its RS-485 address across power cycles and stops
-        answering broadcast discovery once addressed, so probe the configured
-        address first and only fall back to discovery for a fresh box.
+        Open the chain's port and make sure this unit's box answers at
+        box_addr. A box keeps its address while powered and then ignores
+        broadcast discovery, so probe the address first; after a power cycle
+        the boxes are unaddressed and get (re)addressed by discovery.
         """
         if not self.transport.open():
             self._set_offline(self.transport.last_error)
             return False
 
+        reply = self._probe()
+        if reply is None:
+            self.logger.info("CFS {}: no reply at address {}, trying discovery".format(
+                self.name, self.box_addr))
+            found = self.bus.discover(timeout=max(self.request_timeout, 1.5))
+            reply = self._probe() if found else None
+            if reply is None:
+                self._set_offline("box did not answer discovery" if not found
+                                  else "box did not answer after addressing")
+                return False
+            for uid, addr in found:
+                if addr == self.box_addr:
+                    self.logger.info("CFS {}: addressed box uid {} at {}".format(
+                        self.name, uid.hex(), addr))
+        uid = bytes(reply.data[2:14]) if len(reply.data) >= 14 else None
+        if uid is not None:
+            self.seen_uid = uid
+            if self.box_uid and uid != self.box_uid:
+                msg = ("box at address {} is uid {}, expected {} (box_uid); power-cycle "
+                       "the CFS chain so the boxes are addressed again".format(
+                           self.box_addr, uid.hex(), self.box_uid.hex()))
+                self.logger.error("CFS {}: {}".format(self.name, msg))
+                self._set_offline(msg)
+                return False
+        return self._set_online()
+
+    def _probe(self) -> Optional[P.Frame]:
         for status in (P.REQ_STATUS_ADDRESSING, P.REQ_STATUS_NORMAL):
             reply = self.transport.request(self.box_addr, P.CMD_ONLINE_CHECK, b"",
                                            status=status, timeout=self.request_timeout)
             if reply is not None:
-                return self._set_online()
-
-        self.logger.info("CFS {}: no reply at address {}, trying discovery".format(
-            self.name, self.box_addr))
-        reply = self.transport.request(P.BROADCAST_BOXES, P.CMD_GET_SLAVE_INFO,
-                                       bytes([P.BROADCAST_BOXES, P.BROADCAST_BOXES]),
-                                       status=P.REQ_STATUS_ADDRESSING,
-                                       timeout=max(self.request_timeout, 1.5), retries=2)
-        if reply is None or len(reply.data) < 14:
-            self._set_offline("box did not answer discovery")
-            return False
-        uid = bytes(reply.data[2:14])
-        self.transport.request(P.BROADCAST_BOXES, P.CMD_SET_SLAVE_ADDR,
-                               bytes([self.box_addr]) + uid,
-                               status=P.REQ_STATUS_ADDRESSING, timeout=1.5)
-        reply = self.transport.request(self.box_addr, P.CMD_ONLINE_CHECK, b"",
-                                       status=P.REQ_STATUS_ADDRESSING,
-                                       timeout=self.request_timeout)
-        if reply is None:
-            self._set_offline("box did not answer after addressing")
-            return False
-        self.logger.info("CFS {}: addressed box uid {} at {}".format(
-            self.name, uid.hex(), self.box_addr))
-        return self._set_online()
+                return reply
+        return None
 
     def _set_online(self) -> bool:
         if not self.online:
@@ -1127,6 +1252,9 @@ class afcCFS(afcUnit):
         lines = [
             "CFS {} @ {} addr {}".format(self.name, self.serial_path, self.box_addr),
             "  version: {}".format(self.version_sn or "unknown"),
+            "  box uid: {}{}".format(self.seen_uid.hex() if self.seen_uid else "?",
+                                    "" if not self.box_uid or self.seen_uid == self.box_uid
+                                    else " (box_uid is {})".format(self.box_uid.hex())),
             "  box state: {}".format(P.status_name(box_status)),
             "  filament present: {}".format(slots(material)),
             "  connected slot: {}".format(slots(connected)),
@@ -1150,7 +1278,8 @@ class afcCFS(afcUnit):
 
     def cmd_AFC_CFS_RECONNECT(self, gcmd: GCodeCommand) -> None:
         with self.operation():
-            self.transport.close()
+            if len(self.bus.units) == 1:      # other boxes on the chain keep the port
+                self.transport.close()
             self.online = False
             ok = self.connect()
         gcmd.respond_info("CFS {}: {}".format(

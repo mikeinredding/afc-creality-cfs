@@ -42,6 +42,10 @@ SCENARIOS = [
     "unload_still_gripped",
     "box_boots_late",
     "offline_prep_then_online",
+    "two_boxes_by_uid",
+    "two_boxes_load_while_polling",
+    "wrong_box_at_address",
+    "single_box_without_uid",
 ]
 
 

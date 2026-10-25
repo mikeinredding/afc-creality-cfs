@@ -126,9 +126,15 @@ class AFCCFSLane(AFCLane):
     def _toolhead_sensor(self) -> bool:
         return bool(self.get_toolhead_pre_sensor_state())
 
-    def _cutter_engaged(self) -> bool:
+    def _cutter(self) -> Any:
+        """The unit whose cutter switch to watch: the cutter is on the
+        toolhead, so a box without cutter_sensor_pin uses the chain's."""
         unit = self.cfs
-        return bool(unit.cutter_sensor_pin and unit.cutter_sensor_state)
+        return getattr(unit, "cutter_source", None) or unit
+
+    def _cutter_engaged(self) -> bool:
+        cutter = self._cutter()
+        return bool(cutter.cutter_sensor_pin and cutter.cutter_sensor_state)
 
     def _trace(self, ev: str, **fields: Any) -> None:
         trace = getattr(self.cfs, "trace", None)
@@ -408,13 +414,14 @@ class AFCCFSLane(AFCLane):
         if not self.afc.tool_cut:
             return None
         unit = self.cfs
+        cutter = self._cutter()
         reason = None
         for attempt in range(max(unit.load_attempts, 1) + 1):
-            triggers_before = getattr(unit, "cutter_trigger_count", 0)
+            triggers_before = getattr(cutter, "cutter_trigger_count", 0)
             self.extruder_obj.estats.increase_cut_total()
             self.afc.gcode.run_script_from_command(
                 "{} EXTRUDER={}".format(self.afc.tool_cut_cmd, self.extruder_obj.name))
-            if not unit.cutter_sensor_pin:
+            if not cutter.cutter_sensor_pin:
                 self._trace("cut", attempt=attempt + 1, verified=False)
                 return None
             # Let the cut moves finish and the switch report arrive
@@ -424,16 +431,16 @@ class AFCCFSLane(AFCLane):
             start = self.reactor.monotonic()
             self._pause(0.1)
             while self._cutter_engaged():
-                if self.reactor.monotonic() - start > unit.cutter_wait_time:
+                if self.reactor.monotonic() - start > cutter.cutter_wait_time:
                     break
                 self._pause(0.01)
             released = not self._cutter_engaged()
-            fired = getattr(unit, "cutter_trigger_count", 0) > triggers_before
+            fired = getattr(cutter, "cutter_trigger_count", 0) > triggers_before
             self._trace("cut", attempt=attempt + 1, verified=True, fired=fired,
                         released=released, seconds=round(self.reactor.monotonic() - start, 2))
             if not released:
                 reason = "cutter sensor did not release after cutting"
-            elif not fired and unit.cutter_require_trigger:
+            elif not fired and cutter.cutter_require_trigger:
                 reason = ("cutter switch never fired during the cut (blade did not reach "
                           "the end of its travel; check pin_loc_xy / cut_move_dist)")
             else:

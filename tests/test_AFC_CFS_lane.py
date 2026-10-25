@@ -42,6 +42,7 @@ def _make_lane(index=1, printing=False, tool_loaded=False, runout_lane=None):
     unit.cutter_wait_time = 0.01
     unit.cutter_trigger_count = 0
     unit.cutter_require_trigger = True
+    unit.cutter_source = None
     unit.read_material_mask = MagicMock(return_value=0b1111)
 
     lane.name = "lane{}".format(index)
@@ -419,3 +420,23 @@ class TestVirtualHubGate:
         set_sensors(lane, False, 0)
         hub.lanes = {lane.name: lane}
         assert lane.load_state is False
+
+
+class TestSharedCutter:
+    def test_box_without_pin_uses_the_chains_cutter(self):
+        lane = _make_lane(tool_loaded=True)
+        lane.unit_obj.cutter_sensor_pin = None
+        other = MagicMock()
+        other.cutter_sensor_pin = "nozzle_mcu:PA8"
+        other.cutter_sensor_state = False
+        other.cutter_trigger_count = 0
+        other.cutter_wait_time = 0.01
+        other.cutter_require_trigger = True
+        lane.unit_obj.cutter_source = other
+
+        def cut(script):
+            other.cutter_trigger_count += 1      # switch fired and released
+
+        lane.afc.gcode.run_script_from_command = MagicMock(side_effect=cut)
+        assert lane._run_cutter_sequence() is None
+        assert lane._cutter() is other

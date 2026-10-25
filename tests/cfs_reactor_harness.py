@@ -169,28 +169,33 @@ class Rig:
         afc.move_e_pos = move_e_pos
         self.afc = afc
 
+        self.unit = self.add_unit("CFS_1", **overrides)
+
+    def add_unit(self, name, **overrides):
+        """Another [AFC_CFS] section; with the same serial it joins the chain."""
         unit = afcCFS.__new__(afcCFS)
-        unit.reactor = r
+        unit.reactor = self.r
         unit.logger = self.logger
-        unit.name = "CFS_1"
+        unit.name = name
         unit.lanes = {}
-        unit.afc = afc
+        unit.afc = self.afc
         values = dict(FAST)
         values.update(overrides)
-        values.setdefault("serial", sim.path)
+        values.setdefault("serial", self.sim.path)
         unit._load_cfs_config(Defaults(values))
         unit._init_cfs_runtime()
         unit.on_filament_insert = MagicMock()
         unit.on_filament_remove = MagicMock()
         unit.lane_tool_loaded = MagicMock()      # LED handling, needs a full lane
         unit.lane_tool_unloaded = MagicMock()
-        self.unit = unit
+        return unit
 
-    def lane(self, index):
+    def lane(self, index, unit=None, name=None):
+        unit = unit or self.unit
         lane = AFCCFSLane.__new__(AFCCFSLane)
-        lane.name = "lane{}".format(index)
+        lane.name = name or "lane{}".format(index)
         lane.index = index
-        lane.unit_obj = self.unit
+        lane.unit_obj = unit
         lane.afc = self.afc
         lane.reactor = self.r
         lane.logger = self.logger
@@ -207,7 +212,7 @@ class Rig:
         lane.runout_lane = None
         lane.spool_id = None
         lane._afc_prep_done = True
-        self.unit.lanes[lane.name] = lane
+        unit.lanes[lane.name] = lane
         return lane
 
     @property
@@ -665,6 +670,98 @@ def sc_unload_still_gripped(r):
         "reactor_never_stalled": dog.never_stalled,
     }, {"failures": rig.failures, "max_gap_ms": round(dog.max_gap * 1000, 2),
         "reel_positions": sim.reel_positions}
+
+
+UID_X = bytes.fromhex("b0313b4e8411b00645353230")   # first box on the chain
+UID_Y = bytes.fromhex("c1424c5f9522c11756464341")   # second box
+
+
+def sc_two_boxes_by_uid(r):
+    """Two unaddressed boxes on one chain. Discovery finds X first, but the
+    config puts Y at address 1, so each section must get its own box."""
+    sim = FakeCFS(addressed=False, uid=UID_X, material_mask=0b0011)
+    box_y = sim.add_box(addressed=False, uid=UID_Y, material_mask=0b1100)
+    rig = Rig(r, sim, box_addr=1, box_uid=UID_Y.hex())
+    unit2 = rig.add_unit("CFS_2", box_addr=2, box_uid=UID_X.hex())
+    shared = rig.unit.transport is unit2.transport
+    ok1 = rig.unit.connect()
+    ok2 = unit2.connect()
+    m1 = rig.unit.read_material_mask()
+    m2 = unit2.read_material_mask()
+    rig.unit._cfs_handle_disconnect()
+    sim.close()
+    return {
+        "one_port_for_the_chain": shared,
+        "both_online": ok1 and ok2,
+        "addressed_by_uid": box_y.addr == 1 and sim.addr == 2,
+        "each_unit_reads_its_box": m1 == 0b1100 and m2 == 0b0011,
+        "uids_recorded": rig.unit.seen_uid == UID_Y and unit2.seen_uid == UID_X,
+    }, {"addr_x": sim.addr, "addr_y": box_y.addr, "m1": m1, "m2": m2}
+
+
+def sc_two_boxes_load_while_polling(r):
+    """A load and unload on box 2 while both boxes are being polled over the
+    shared port: the other box stays online and nothing blocks the reactor."""
+    sim = FakeCFS(addressed=True, addr=2, uid=UID_X, reply_delay=0.02, stage5_delay=0.2)
+    box1 = sim.add_box(addressed=True, addr=1, uid=UID_Y, material_mask=0b0001)
+    rig = Rig(r, sim, box_addr=1, box_uid=UID_Y.hex(), poll_interval=0.2)
+    unit2 = rig.add_unit("CFS_2", box_addr=2, box_uid=UID_X.hex(), poll_interval=0.2)
+    rig.lane(1)                                   # lane1 on box 1 (polled only)
+    lane5 = rig.lane(1, unit=unit2, name="lane5")  # slot A of box 2
+    dog = Watchdog(r)
+    rig.unit.connect()
+    unit2.connect()
+    rig.unit._cfs_handle_ready()
+    unit2._cfs_handle_ready()
+    wait(r, 0.5)
+    polls_before = box1.count(P.GET_FILAMENT_SENSOR_STATE)
+    lane5.cmd_AFC_CFS_TOOL_LOAD(None)
+    loaded = sim.toolhead_sensor
+    lane5.cmd_AFC_CFS_TOOL_UNLOAD(None)
+    polls_after = box1.count(P.GET_FILAMENT_SENSOR_STATE)
+    unit2._cfs_handle_disconnect()
+    rig.unit._cfs_handle_disconnect()
+    dog.stop()
+    sim.close()
+    return {
+        "no_failures": rig.failures == [],
+        "loaded_from_box2": loaded,
+        "unloaded": sim.position == 0.0 and not sim.toolhead_sensor,
+        "box1_never_got_motor_commands": box1.count(P.EXTRUDE_PROCESS) == 0
+                                         and box1.count(P.RETRUDE_PROCESS) == 0,
+        "box1_kept_being_polled": polls_after > polls_before,
+        "box1_still_online": rig.unit.online,
+        "reactor_never_stalled": dog.never_stalled,
+    }, {"failures": rig.failures, "max_gap_ms": round(dog.max_gap * 1000, 2),
+        "box1_polls": [polls_before, polls_after]}
+
+
+def sc_wrong_box_at_address(r):
+    """Boxes already addressed the other way round (e.g. by stock firmware):
+    a unit must refuse the box at its address rather than drive the wrong one."""
+    sim = FakeCFS(addressed=True, addr=1, uid=UID_X)
+    sim.add_box(addressed=True, addr=2, uid=UID_Y)
+    rig = Rig(r, sim, box_addr=1, box_uid=UID_Y.hex())
+    ok = rig.unit.connect()
+    sim.close()
+    return {
+        "refused": not ok and not rig.unit.online,
+        "explains": "power-cycle" in (rig.unit.transport.last_error or "") or
+                    any("wrong" in l or "expected" in l for l in rig.logger.lines),
+    }, {"lines": rig.logger.lines[-3:]}
+
+
+def sc_single_box_without_uid(r):
+    """Existing single-box configs (no box_uid) keep working as before."""
+    sim = FakeCFS(addressed=False, uid=UID_X)
+    rig = Rig(r, sim)
+    ok = rig.unit.connect()
+    sim.close()
+    return {
+        "online": ok,
+        "addressed_at_1": sim.addr == 1,
+        "uid_recorded": rig.unit.seen_uid == UID_X,
+    }, {}
 
 
 SCENARIOS = {name[3:]: fn for name, fn in globals().items() if name.startswith("sc_")}

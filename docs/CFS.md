@@ -209,6 +209,28 @@ each cut must make the switch fire *and* release again; if it never fires, the c
 is retried and then the unload stops before retracting
 (`cutter_require_trigger: True`, the default).
 
+## Multiple CFS units
+
+Up to four boxes per chain. The RS-485 cable is daisy-chained (printer → adapter →
+box 1 IN, box 1 OUT → box 2 IN, …); each box's tube goes to its own input of the 4-in-1
+buffer. In the config:
+
+- one `[AFC_CFS]` section per box, all with the **same `serial`** (they share the
+  port and take turns on the bus), each with its own `box_addr` (1–4) and `box_uid`;
+- all of them `hub: CFS_1` — the buffer is the one place every box's filament meets,
+  so filament left there from any box blocks loading from any other;
+- lanes `lane5`–`lane8` for box 2 and so on (`templates/AFC_CFS_2.cfg`).
+
+Boxes forget their address when powered off and answer discovery one at a time, in
+no guaranteed order. Discovery therefore gives each box the `box_addr` of the section
+whose `box_uid` matches; a box at an address that belongs to another uid (e.g. left
+addressed by stock firmware) is refused with a message until the chain is
+power-cycled. A single box without `box_uid` works as before.
+
+Hardware-untested so far: two boxes answering one discovery broadcast at once (stock
+sends one broadcast per expected box, so they appear to take turns), and whether
+a second box needs anything when the other box's slot is in the buffer.
+
 ## Nozzle wipes (K1 napkin strip)
 
 Creality has K1 owners stick a "napkin strip" pad on the back edge of the build

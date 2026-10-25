@@ -32,9 +32,11 @@ class FakeCFS:
     def __init__(self, material_mask=0b0011, addressed=True, addr=1,
                  path_len=600.0, grip_len=620.0, feed_per_poll=60.0,
                  reply_delay=0.02, stage5_delay=0.15, stage_delays=None,
-                 stage0_feed=0.0, reel_delay=0.0):
+                 stage0_feed=0.0, reel_delay=0.0, uid=None, standalone=True):
         self.addr = addr if addressed else None
-        self.uid = bytes(range(0x10, 0x1C))  # 12 bytes
+        self.uid = bytes(uid) if uid is not None else bytes(range(0x10, 0x1C))  # 12 bytes
+        # More boxes daisy-chained on the same RS-485 bus (add_box)
+        self.chain = []
         self.material_mask = material_mask
         self.path_len = path_len
         self.grip_len = grip_len
@@ -65,6 +67,9 @@ class FakeCFS:
         self.garbage_before_reply = b""
         self.lock = threading.Lock()
 
+        self.standalone = standalone
+        if not standalone:            # a box further down another box's chain
+            return
         self.master, self.slave = pty.openpty()
         tty.setraw(self.master)
         self.path = os.ttyname(self.slave)
@@ -72,6 +77,12 @@ class FakeCFS:
         self._stop = False
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+
+    def add_box(self, **kw) -> "FakeCFS":
+        """Daisy-chain another box behind this one, on the same bus."""
+        box = FakeCFS(standalone=False, **kw)
+        self.chain.append(box)
+        return box
 
     # -- harness-facing ----------------------------------------------------
 
@@ -86,6 +97,8 @@ class FakeCFS:
                 self.position = max(0.0, self.position + distance)
 
     def close(self):
+        if not self.standalone:
+            return
         self._stop = True
         self._thread.join(timeout=1.0)
         for fd in (self.master, self.slave):
@@ -109,24 +122,31 @@ class FakeCFS:
             except OSError:
                 return
             for frame in self._parser.feed(chunk):
-                reply = self._handle(frame)
+                # Every box on the chain sees the frame; the one it is for
+                # answers (one unaddressed box per discovery broadcast).
+                reply, box = None, None
+                for candidate in [self] + self.chain:
+                    reply = candidate._handle(frame)
+                    if reply is not None:
+                        box = candidate
+                        break
                 if reply is None:
                     continue
-                if self.mute:                 # still booting: says nothing
+                if box.mute:                  # still booting: says nothing
                     continue
-                if self.drop_replies > 0:
-                    self.drop_replies -= 1
+                if box.drop_replies > 0:
+                    box.drop_replies -= 1
                     continue
-                delay = self.reply_delay
+                delay = box.reply_delay
                 if frame.fn == P.EXTRUDE_PROCESS and len(frame.data) > 1:
                     stage = frame.data[1]
-                    if stage in self.stage_delays:
-                        delay = self.stage_delays[stage]
+                    if stage in box.stage_delays:
+                        delay = box.stage_delays[stage]
                     elif stage == 5:
-                        delay = self.stage5_delay
+                        delay = box.stage5_delay
                 elif frame.fn == P.RETRUDE_PROCESS and len(frame.data) > 1 \
                         and frame.data[0] and frame.data[1] == 1:
-                    delay = self.reel_delay
+                    delay = box.reel_delay
                 time.sleep(delay)
                 os.write(self.master, self.garbage_before_reply + reply)
 
@@ -139,7 +159,7 @@ class FakeCFS:
         if f.fn == P.CMD_GET_SLAVE_INFO:
             if f.addr != P.BROADCAST_BOXES or self.addr is not None:
                 return None  # addressed boxes ignore broadcast discovery
-            return self._reply(P.BROADCAST_BOXES, P.ST_OK, f.fn, b"\x00\x01" + self.uid)
+            return self._reply(P.BROADCAST_BOXES, P.ST_OK, f.fn, b"\x01\x00" + self.uid)
         if f.fn == P.CMD_SET_SLAVE_ADDR:
             if bytes(f.data[1:13]) == self.uid:
                 self.addr = f.data[0]
@@ -150,8 +170,8 @@ class FakeCFS:
         a = self.addr
 
         with self.lock:
-            if f.fn == P.CMD_ONLINE_CHECK:
-                return self._reply(a, P.ST_OK, f.fn, self.uid)
+            if f.fn == P.CMD_ONLINE_CHECK:     # real box: [dev_type 01][mode 00][uid]
+                return self._reply(a, P.ST_OK, f.fn, b"\x01\x00" + self.uid)
             if f.fn == P.GET_VERSION_SN:
                 return self._reply(a, P.ST_OK, f.fn, b"SIMCFS-0001")
             if f.fn == P.GET_FILAMENT_SENSOR_STATE:
