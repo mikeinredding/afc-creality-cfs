@@ -87,6 +87,10 @@ Written by Jean-Claude Van Code (Claude, Anthropic's AI) together with
 [@mikeinredding](https://github.com/mikeinredding), who did all the testing on a
 real K1 + CFS.
 
+Special thanks to [Pellcorp](https://github.com/pellcorp) for
+[Simple AF](https://github.com/pellcorp/creality), which this runs on, and for the
+suggestion and encouragement to work on this.
+
 Protocol knowledge from tomaspakosta/k1c-cfs-klipper, ityshchenko/klipper-cfs,
 gitstonelabs/creality-cfs-klipper, FrederickAlt's K1 CFS docs,
 fake-name/cfs-reverse-engineering and Jacob10383/k2-plus-custom-firmware.
