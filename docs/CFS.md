@@ -149,7 +149,7 @@ redo the cutter calibration):
 | `Tn_extrude_velocity` | 360 mm/min | `purge_spd: 6` (mm/s) |
 | `clean_left/right_pos` | X 153.5–178, Y 225.3 | wiper, if you enable `wipe` later: `brush_loc: 165.75, 225.3, -1`, `brush_width: 24.5` |
 
-So, in `AFC.cfg`: `park_cmd: AFC_CFS_PARK`, `kick: False`, `wipe: False` (for now),
+So, in `AFC.cfg`: `park_cmd: AFC_CFS_PARK`, `kick: False`, `wipe: True` with `wipe_cmd: AFC_CFS_PAD_WIPE` (see *Nozzle wipes* below), `default_material_temps: default: 220, …` (stock `Tn_extrude_temp: 220`; AFC uses the default when a lane has no material set),
 `post_load_macro: AFC_CFS_LEAVE_PURGE` and `post_unload_macro: AFC_CFS_LEAVE_PURGE`.
 The last two matter: after a load AFC restores the saved position Z first, so
 without them the bed rises to the saved height + `z_hop` with the toolhead still
@@ -208,6 +208,27 @@ nearly finished its stroke. The unload uses that. With `cutter_sensor_pin` set,
 each cut must make the switch fire *and* release again; if it never fires, the cut
 is retried and then the unload stops before retracting
 (`cutter_require_trigger: True`, the default).
+
+## Nozzle wipes (K1 napkin strip)
+
+Creality has K1 owners stick a "napkin strip" pad on the back edge of the build
+plate; measured on a K1 it runs X60–96 at Y223, about 1.9 mm above the bed. Simple
+AF's load cell wipe (`loadcells_wipe.cfg`) scrapes a random 30 mm line anywhere in the
+middle third of X at Y222.5–224.5, which with the CFS kit can run past the pad into the
+purge hopper (that collision skipped a belt on the K1 and the next cut missed).
+
+`templates/AFC_CFS_wipe.cfg` fixes the location and adds a tool-change wipe:
+
+- `_SAF_NOZZLE_WIPE` replaces Simple AF's start-of-print wipe (the `START_PRINT`
+  hook): same heating, tapping (Simple AF's `_LOAD_CELL_WIPE_MEASURE`) and slow scrape,
+  but always on the pad, approached and left from the front, lifting off forward
+  instead of continuing sideways (toward the hopper one way, the cutter pin the other).
+  Keep `[include loadcells_wipe.cfg]` in `printer.cfg` for the helpers.
+- `AFC_CFS_PAD_WIPE` (AFC `wipe_cmd`) drags the nozzle across the pad after each purge
+  at the pad height the start wipe measured (`wipe_height` above it), no taps.
+
+Copy it to the AFC config folder, set the pad in `_AFC_CFS_PAD_VARS` if yours differs,
+and test `_SAF_NOZZLE_WIPE EXTRUDER_TEMP=220 BED_TEMP=60` by hand first.
 
 ## Test plan — do these in order, at the printer
 
