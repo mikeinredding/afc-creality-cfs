@@ -83,6 +83,10 @@ watchdog that fails the test if anything blocks the reactor.
 
 ## Credits
 
+Written by Jean-Claude Van Code (Claude, Anthropic's AI) together with
+[@mikeinredding](https://github.com/mikeinredding), who did all the testing on a
+real K1 + CFS.
+
 Protocol knowledge from tomaspakosta/k1c-cfs-klipper, ityshchenko/klipper-cfs,
 gitstonelabs/creality-cfs-klipper, FrederickAlt's K1 CFS docs,
 fake-name/cfs-reverse-engineering and Jacob10383/k2-plus-custom-firmware.
