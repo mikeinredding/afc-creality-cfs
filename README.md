@@ -1,6 +1,6 @@
 # AFC Creality CFS
 
-Experimental [AFC](https://github.com/suchmememanyskill/AFC-Klipper-Add-On) unit
+[AFC](https://github.com/suchmememanyskill/AFC-Klipper-Add-On) unit
 type for the **Creality CFS** filament box. It drives the box over its own RS-485
 link from mainline Klipper / Kalico, without Creality's closed-source
 `box.py` / `box_wrapper.so`.
@@ -9,12 +9,23 @@ Built for a **K1 / K1 Max with the CFS upgrade kit running
 [Simple AF](https://github.com/pellcorp/creality)**, but nothing here is K1-specific
 beyond the example config.
 
-> **Status: not yet tested on a real printer.** The wire protocol matches real
-> captured traffic, and the load/unload sequences follow steps confirmed on
-> hardware by [tomaspakosta/k1c-cfs-klipper](https://github.com/tomaspakosta/k1c-cfs-klipper).
-> This integration has been tested against a simulated box on Klipper's real
-> reactor. Follow the staged test plan in [docs/CFS.md](docs/CFS.md) and stay at
-> the printer for the first sessions.
+> **Status: currently in testing on a real K1 + CFS.** Loads, purges, cuts,
+> unloads and 4-color prints (one box) work; see the test prints below. Still
+> new, so follow the staged test plan in [docs/CFS.md](docs/CFS.md), stay at the
+> printer for the first sessions, and check [Known issues](#known-issues).
+> Multiple boxes on one chain are implemented but not yet tested on hardware.
+
+## Test prints
+
+K1 with the CFS kit, 0.2 mm nozzle, Simple AF.
+
+| First 2-color test | 2-color, after the fixes | 4-color stairs |
+|---|---|---|
+| ![First 2-color test: torn top layer and strings](docs/images/test1_2color_235C_no_wipe.jpg) | ![Second 2-color test, top](docs/images/test2_2color_top.jpg) | ![4-color stair test](docs/images/test3_4color_stairs.jpg) |
+| Purge at 235 °C and no nozzle wipe: ooze dragged into the part | Purge at 220 °C (stock) plus the napkin-strip wipe: clean color change | Slots A–D, three tool changes in a row, no blobs or color bleed |
+
+The second test's bottom (first color on the textured plate):
+[photo](docs/images/test2_2color_bottom.jpg).
 
 ## What you get
 

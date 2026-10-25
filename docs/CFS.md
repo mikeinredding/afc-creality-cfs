@@ -1,16 +1,17 @@
-# Creality CFS support (experimental)
+# Creality CFS support (in testing)
 
 Drives a Creality CFS box from AFC on mainline Klipper / Kalico, without
 Creality's closed `box.py` / `box_wrapper.so`. Target setup: K1 / K1 Max with the
 CFS upgrade kit, running [Simple AF](https://github.com/pellcorp/creality).
 
-**Status:** the wire protocol is validated against real captured traffic, and the
-load/unload sequences follow steps that
+**Status: currently in testing on a real K1 + CFS** (0.2 mm nozzle, Simple AF).
+Loading, purging, the napkin-strip wipe, cutting, unloading, tool changes and
+4-color prints from one box work; multiple boxes on one chain are implemented and
+simulator-tested but not yet tried on hardware. The wire protocol follows real
+captured traffic and the load/unload steps that
 [tomaspakosta/k1c-cfs-klipper](https://github.com/tomaspakosta/k1c-cfs-klipper)
-confirmed on hardware. The AFC integration itself has been tested against a
-simulated box on Klipper's real reactor, **not yet on a real printer**. Treat
-the first sessions as bring-up: stay at the printer and follow the test plan
-below in order.
+confirmed. On a new setup, still treat the first sessions as bring-up: stay at the
+printer and follow the test plan below in order.
 
 ## How it works
 
@@ -343,8 +344,9 @@ and markers. When reporting a problem, attach the trace file(s) and `klippy.log`
   testing used 2. If stage 7 returns `PARAMS_ERR`, try `stage7_arg: 2`.
 - The stock handoff retries stage 7 with measuring-wheel verification; this
   implementation does a single handoff and relies on `load_attempts`.
-- Multiple boxes on one bus (`box_addr` 2-4) are untested.
-- `eject_lane` (reel a lane back with nothing in the toolhead) is untested.
+- Multiple boxes on one bus (`box_addr` 2-4) are simulator-tested only.
+- `eject_lane` / `AFC_CFS_EJECT` works on a K1 (it reeled a cut, retracted lane
+  back and recovered a failed unload).
 
 ## Credits
 
