@@ -81,6 +81,18 @@ The reactor scenarios run the actual unit and lane code on Klipper's event loop
 against `tests/cfs_sim.py`, a simulated CFS on a pseudo-terminal, with a 5 ms
 watchdog that fails the test if anything blocks the reactor.
 
+## Known issues
+
+- **CFS lights chase red after Klipper restarts or halts.** If the printer stops
+  talking to the box for a while while the box stays powered (Klipper halted on a
+  config error, a long restart, the printer switched off on its own), the box shows
+  its "no communication" pattern: red lights cycling through the four slots. It
+  keeps showing it after Klipper reconnects, even though the box answers normally
+  and loads, unloads and prints work. It has cleared on its own during the next
+  load/unload, and a power cycle of the box always clears it. Stock firmware
+  presumably sends some recovery message after a reconnect that this plugin doesn't
+  know yet; captures from a stock K1 covering a restart would show it.
+
 ## Credits
 
 Written by Jean-Claude Van Code (Claude, Anthropic's AI) together with
