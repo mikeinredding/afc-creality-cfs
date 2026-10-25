@@ -212,7 +212,7 @@ is retried and then the unload stops before retracting
 ## Nozzle wipes (K1 napkin strip)
 
 Creality has K1 owners stick a "napkin strip" pad on the back edge of the build
-plate; measured on a K1 it runs X60–96 at Y223, about 1.9 mm above the bed. Simple
+plate; measured on a K1 it runs X60–96, front edge at Y223, with the nozzle over its middle at Y226 (the wipe line). Simple
 AF's load cell wipe (`loadcells_wipe.cfg`) scrapes a random 30 mm line anywhere in the
 middle third of X at Y222.5–224.5, which with the CFS kit can run past the pad into the
 purge hopper (that collision skipped a belt on the K1 and the next cut missed).
