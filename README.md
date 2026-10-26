@@ -21,11 +21,9 @@ K1 with the CFS kit, 0.2 mm nozzle, Simple AF.
 
 | First 2-color test | 2-color, after the fixes | 4-color stairs |
 |---|---|---|
-| ![First 2-color test: torn top layer and strings](docs/images/test1_2color_235C_no_wipe.jpg) | ![Second 2-color test, top](docs/images/test2_2color_top.jpg) | ![4-color stair test](docs/images/test3_4color_stairs.jpg) |
+| ![First 2-color test: torn top layer and strings](docs/images/test1_2color_235C_no_wipe.jpg) | ![Second 2-color test, top and bottom](docs/images/test2_2color_topandbottom.png) | ![4-color stair test](docs/images/test3_4color_stairs.jpg) |
 | Purge at 235 °C and no nozzle wipe: ooze dragged into the part | Purge at 220 °C (stock) plus the napkin-strip wipe: clean color change | Slots A–D, three tool changes in a row, no blobs or color bleed |
 
-The second test's bottom (first color on the textured plate):
-[photo](docs/images/test2_2color_bottom.jpg).
 
 ## What you get
 
