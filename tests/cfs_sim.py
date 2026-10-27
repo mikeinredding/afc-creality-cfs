@@ -64,6 +64,8 @@ class FakeCFS:
         self.latched_error = P.ST_OK
         self.log = []                 # (fn, data) of every request
         self.drop_replies = 0         # fault injection: swallow the next N replies
+        self.drop_stage5_reply = 0    # fault injection: swallow the Nth stage 5 poll reply
+        self.stage5_polls = 0
         self.garbage_before_reply = b""
         self.lock = threading.Lock()
 
@@ -137,6 +139,11 @@ class FakeCFS:
                 if box.drop_replies > 0:
                     box.drop_replies -= 1
                     continue
+                if frame.fn == P.EXTRUDE_PROCESS and len(frame.data) > 1 \
+                        and frame.data[1] == 5:
+                    box.stage5_polls += 1
+                    if box.stage5_polls == box.drop_stage5_reply:
+                        continue
                 delay = box.reply_delay
                 if frame.fn == P.EXTRUDE_PROCESS and len(frame.data) > 1:
                     stage = frame.data[1]

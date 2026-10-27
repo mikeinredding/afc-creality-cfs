@@ -205,8 +205,6 @@ class CFSTransport:
         self.rx_count = 0
         self.timeouts = 0
         self.trace: Optional[CFSTrace] = None
-        # When True, ordinary frames aren't traced (idle status polls)
-        self.quiet = False
         self._traced_crc_errors = 0
         # The box handles one command at a time and answers motor commands
         # only once the motion finishes. Requests that timed out are still
@@ -317,8 +315,9 @@ class CFSTransport:
                     self.name, P.fn_name(frame.fn), frame.status_name(), frame.data.hex()))
             pending = self._pending
             if pending is not None and frame.fn == pending["fn"] \
+                    and (pending["addr"] == P.BROADCAST_BOXES or frame.addr == pending["addr"]) \
                     and not pending["completion"].test():
-                if not self.quiet:
+                if not pending["quiet"]:
                     self._trace("rx", fn=P.fn_name(frame.fn), addr=frame.addr,
                                 st=frame.status_name(), data=frame.data.hex(),
                                 ms=round((self.reactor.monotonic() - pending["sent"]) * 1000, 1))
@@ -365,7 +364,8 @@ class CFSTransport:
 
     def request(self, addr: int, fn: int, data: bytes = b"",
                 status: int = P.REQ_STATUS_NORMAL, timeout: float = 1.0,
-                retries: int = 1, motor: bool = False) -> Optional[P.Frame]:
+                retries: int = 1, motor: bool = False,
+                quiet: bool = False) -> Optional[P.Frame]:
         """
         Send one request and wait (cooperatively) for the matching reply.
         Returns the reply frame, or None after all retries time out.
@@ -375,6 +375,9 @@ class CFSTransport:
         the next request first waits for its late reply. A non-motor request
         that times out is treated as lost (box gone, frame dropped): nothing
         to wait for.
+
+        quiet=True leaves the tx/rx frames out of the trace (idle status
+        polls); timeouts are always traced.
         """
         with self._mutex:
             for attempt in range(retries + 1):
@@ -384,7 +387,8 @@ class CFSTransport:
                     self._wait_for_late_replies()
                 frame = P.encode_frame(addr, status, fn, data)
                 completion = self.reactor.completion()
-                self._pending = {"fn": fn, "completion": completion,
+                self._pending = {"fn": fn, "addr": addr, "quiet": quiet,
+                                 "completion": completion,
                                  "sent": self.reactor.monotonic()}
                 if self.debug:
                     self.logger.debug("{}: TX {} {}".format(self.name, P.fn_name(fn), frame.hex()))
@@ -394,7 +398,7 @@ class CFSTransport:
                     continue
                 self.tx_count += 1
                 self._pending["sent"] = self.reactor.monotonic()
-                if not self.quiet:
+                if not quiet:
                     self._trace("tx", fn=P.fn_name(fn), addr=addr, data=bytes(data).hex(),
                                 attempt=attempt + 1)
                 result = completion.wait(self.reactor.monotonic() + timeout)
@@ -482,6 +486,14 @@ class CFSBus:
                 "addressed in discovery order, which can change. Set box_uid on each "
                 "(AFC_CFS_STATUS shows it).".format(unit.name, self.transport.path))
         self.units.append(unit)
+
+    @property
+    def operation_active(self) -> bool:
+        """True while any box on this chain is in a load/unload sequence.
+        Status polls of the other boxes must stay off the wire then: a poll
+        squeezed in between a box's stage 5 polls can make that box miss
+        the next one (seen with two boxes on a K1 Max)."""
+        return any(u._operation_depth > 0 for u in self.units)
 
     def unit_for_uid(self, uid: bytes) -> Optional[Any]:
         for unit in self.units:
@@ -635,6 +647,9 @@ class afcCFS(afcUnit):
         self.load_attempts = config.getint("load_attempts", 2, minval=1)
         self.stage_settle_time = config.getfloat("stage_settle_time", 0.3, minval=0.)
         self.stage5_poll_interval = config.getfloat("stage5_poll_interval", 0.4, minval=0.05)
+        # Stage 5 polls are answered at once (~20 ms) while the box feeds;
+        # a missed one is just skipped, not waited for like a motor command
+        self.stage5_reply_timeout = config.getfloat("stage5_reply_timeout", 2.0, minval=0.2)
         # Max time for the box to push filament from the spool to the toolhead sensor
         self.stage5_timeout = config.getfloat("stage5_timeout", 60.0, minval=5.)
         # Abort stage 5 early if the measuring wheel hasn't moved for this long
@@ -707,6 +722,7 @@ class afcCFS(afcUnit):
         self._last_heartbeat = 0.0
         self._boot_wait_done = False
         self._operation_depth = 0
+        self._quiet_requests = False
         self._poll_timer = None
 
     @staticmethod
@@ -755,7 +771,7 @@ class afcCFS(afcUnit):
     def _trace_settings(self) -> Dict[str, Any]:
         keys = ("poll_interval", "request_timeout", "load_attempts", "stage_settle_time",
                 "stage_timeout", "checkin_timeout", "resync_timeout",
-            "stage5_poll_interval", "stage5_timeout", "stage5_stall_time",
+            "stage5_poll_interval", "stage5_reply_timeout", "stage5_timeout", "stage5_stall_time",
                 "stage5_stall_distance", "prime1_length", "prime1_speed", "prime2_length",
                 "prime2_speed", "stage7_arg", "clear_mode_after_load",
                 "unload_retract_steps", "unload_tip_wiggle", "unload_timeout")
@@ -766,7 +782,8 @@ class afcCFS(afcUnit):
         connection light happy."""
         reply = self.transport.request(self.box_addr, P.CMD_ONLINE_CHECK, b"",
                                        status=P.REQ_STATUS_ADDRESSING,
-                                       timeout=self.request_timeout)
+                                       timeout=self.request_timeout,
+                                       quiet=self._quiet_requests)
         if reply is None:
             self._consecutive_failures += 1
             if self._consecutive_failures >= self.offline_after:
@@ -874,7 +891,8 @@ class afcCFS(afcUnit):
                 retries: int = 1, motor: bool = False) -> Optional[P.Frame]:
         reply = self.transport.request(self.box_addr, fn, data,
                                        timeout=timeout or self.request_timeout,
-                                       retries=retries, motor=motor)
+                                       retries=retries, motor=motor,
+                                       quiet=self._quiet_requests)
         if reply is None:
             self._consecutive_failures += 1
             if self._consecutive_failures >= self.offline_after:
@@ -903,7 +921,12 @@ class afcCFS(afcUnit):
 
     def extrude_stage(self, slot_bits: int, stage: int, arg: int = 0x00,
                       timeout: Optional[float] = None) -> Optional[P.Frame]:
-        """Motor command: the box answers once the stage's motion finishes."""
+        """Motor command: the box answers once the stage's motion finishes.
+        Stage 5 is the exception: a status poll answered at once while the
+        box feeds, so a lost one costs stage5_reply_timeout, not a resync."""
+        if stage == 0x05:
+            return self.request(P.EXTRUDE_PROCESS, bytes([slot_bits, stage, arg]),
+                                timeout=timeout or self.stage5_reply_timeout, retries=0)
         return self.request(P.EXTRUDE_PROCESS, bytes([slot_bits, stage, arg]),
                             timeout=timeout or self.stage_timeout, retries=0, motor=True)
 
@@ -973,7 +996,7 @@ class afcCFS(afcUnit):
     # -- polling -----------------------------------------------------------
 
     def _poll(self, eventtime: float) -> float:
-        if self._operation_depth > 0 or self.transport.busy:
+        if self.bus.operation_active or self.transport.busy:
             return eventtime + self.poll_interval
 
         if not self.online:
@@ -987,7 +1010,7 @@ class afcCFS(afcUnit):
             if not self.online:
                 return self.reactor.monotonic() + self.poll_interval
 
-        self.transport.quiet = not self.trace_polls
+        self._quiet_requests = not self.trace_polls
         try:
             interval = (self.heartbeat_interval_printing if self._is_printing()
                         else self.heartbeat_interval)
@@ -1004,7 +1027,7 @@ class afcCFS(afcUnit):
         except Exception:
             self.logger.debug("CFS {}: poll failed\n{}".format(self.name, traceback.format_exc()))
         finally:
-            self.transport.quiet = False
+            self._quiet_requests = False
         self._trace_print_state()
         return self.reactor.monotonic() + self.poll_interval
 

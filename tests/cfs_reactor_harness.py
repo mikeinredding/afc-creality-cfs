@@ -700,8 +700,10 @@ def sc_two_boxes_by_uid(r):
 
 
 def sc_two_boxes_load_while_polling(r):
-    """A load and unload on box 2 while both boxes are being polled over the
-    shared port: the other box stays online and nothing blocks the reactor."""
+    """A load and unload on box 2 while both boxes are polled over the shared
+    port: box 1's status polls pause while box 2 is busy (a poll squeezed in
+    between stage 5 polls made the real box 2 miss one), then resume; box 1
+    stays online and nothing blocks the reactor."""
     sim = FakeCFS(addressed=True, addr=2, uid=UID_X, reply_delay=0.02, stage5_delay=0.2)
     box1 = sim.add_box(addressed=True, addr=1, uid=UID_Y, material_mask=0b0001)
     rig = Rig(r, sim, box_addr=1, box_uid=UID_Y.hex(), poll_interval=0.2)
@@ -718,7 +720,9 @@ def sc_two_boxes_load_while_polling(r):
     lane5.cmd_AFC_CFS_TOOL_LOAD(None)
     loaded = sim.toolhead_sensor
     lane5.cmd_AFC_CFS_TOOL_UNLOAD(None)
-    polls_after = box1.count(P.GET_FILAMENT_SENSOR_STATE)
+    polls_during = box1.count(P.GET_FILAMENT_SENSOR_STATE) - polls_before
+    wait(r, 0.6)
+    polls_after = box1.count(P.GET_FILAMENT_SENSOR_STATE) - polls_before - polls_during
     unit2._cfs_handle_disconnect()
     rig.unit._cfs_handle_disconnect()
     dog.stop()
@@ -729,11 +733,33 @@ def sc_two_boxes_load_while_polling(r):
         "unloaded": sim.position == 0.0 and not sim.toolhead_sensor,
         "box1_never_got_motor_commands": box1.count(P.EXTRUDE_PROCESS) == 0
                                          and box1.count(P.RETRUDE_PROCESS) == 0,
-        "box1_kept_being_polled": polls_after > polls_before,
+        "box1_not_polled_while_box2_busy": polls_during <= 1,
+        "box1_polled_again_after": polls_after > 0,
         "box1_still_online": rig.unit.online,
         "reactor_never_stalled": dog.never_stalled,
     }, {"failures": rig.failures, "max_gap_ms": round(dog.max_gap * 1000, 2),
-        "box1_polls": [polls_before, polls_after]}
+        "box1_polls": [polls_before, polls_during, polls_after]}
+
+
+def sc_stage5_reply_lost(r):
+    """The box misses one stage 5 poll (seen on a K1 Max with two boxes). The
+    load carries on with the next poll instead of waiting out a resync."""
+    sim = FakeCFS(addressed=True, reply_delay=0.02, stage5_delay=0.02)
+    sim.drop_stage5_reply = 2
+    rig = Rig(r, sim)
+    lane = rig.lane(1)
+    rig.unit.connect()
+    start = r.monotonic()
+    lane.cmd_AFC_CFS_TOOL_LOAD(None)
+    took = r.monotonic() - start
+    loaded = sim.toolhead_sensor
+    sim.close()
+    return {
+        "no_failures": rig.failures == [],
+        "loaded": loaded,
+        "reply_was_dropped": sim.stage5_polls >= 3,
+        "no_long_resync_wait": took < 15.0,
+    }, {"failures": rig.failures, "seconds": round(took, 2), "stage5_polls": sim.stage5_polls}
 
 
 def sc_wrong_box_at_address(r):

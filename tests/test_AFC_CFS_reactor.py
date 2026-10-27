@@ -44,6 +44,7 @@ SCENARIOS = [
     "offline_prep_then_online",
     "two_boxes_by_uid",
     "two_boxes_load_while_polling",
+    "stage5_reply_lost",
     "wrong_box_at_address",
     "single_box_without_uid",
 ]
