@@ -210,6 +210,26 @@ each cut must make the switch fire *and* release again; if it never fires, the c
 is retried and then the unload stops before retracting
 (`cutter_require_trigger: True`, the default).
 
+### K1 Max values (measured)
+
+The Max's `box.cfg` differs from the K1's; these worked on a K1 Max with the CFS kit,
+0.4 mm nozzle, BTT Eddy (`x_offset: -23`) and load cells for Z offset, box firmware
+`11350000232175B625DGIB`:
+
+| What | K1 Max | Notes |
+|---|---|---|
+| Cutter | `pin_loc_xy: 38, 300`, `cut_move_dist: 7` | arm touches the pin at Y300, the switch fires at Y306 |
+| Y travel | `[stepper_y] position_max: 307.5` | Simple AF sets 306, which ends the cut exactly at the trigger; 307.5 is Creality's own CFS value (`gcode_position_max: 295` kept normal moves lower) |
+| Unload retract | `unload_retract_steps: 10:600, 10:1800` | stock `Tn_retrude: -20`; only 10 mm from the cutter to the gears (`buffer_empty_len`) |
+| Park / purge | X185 Y305.5, Z30; `safe_y: 291.5` | `AFC_CFS_PARK`, `_AFC_POOP_VARS`, `_AFC_PARK_VARS` |
+| Purge | `purge_spd: 6`, `purge_length: 140`, `tool_load_speed: 10` | 0.4 mm nozzle |
+| Napkin pad | X71.5–111.5 at Y302.5 → `x_left: 75.5`, `x_right: 107.5`, `y: 302.5`, `safe_y: 291.5` | in `_AFC_CFS_PAD_VARS`; the template's `safe_y: 215` is the K1's |
+| Reel-back | ~24 s | about twice the K1's 12.4 s (longer tube) |
+
+Creality's wiper strip on the Max is at X187–210, Y305.5 (`clean_left/right_pos`).
+With an Eddy 23 mm left of the nozzle, walk the toolhead slowly to the cutter, the
+chute and both ends of the pad at Z30 before running anything there at speed.
+
 ## Multiple CFS units
 
 Up to four boxes per chain. The RS-485 cable is daisy-chained (printer → adapter →
@@ -252,6 +272,38 @@ purge hopper (that collision skipped a belt on the K1 and the next cut missed).
 
 Copy it to the AFC config folder, set the pad in `_AFC_CFS_PAD_VARS` if yours differs,
 and test `_SAF_NOZZLE_WIPE EXTRUDER_TEMP=220 BED_TEMP=60` by hand first.
+
+## Simple AF macros
+
+Simple AF's installer rewrites `printer.cfg`, so put the `_SAF_…` hooks and overrides
+below in your own custom macros file (for example `custom_macros.cfg`, included in
+`printer.cfg` after Simple AF's includes), not in `printer.cfg` itself.
+
+```ini
+# Home Y first: X homes to the right along the back, through the purge chute,
+# if the printer was switched off while parked there.
+[gcode_macro _HOMING_PARAMS]
+variable_home_y_before_x: True
+
+# Load the print's first tool before START_PRINT's purge line, so the line
+# comes out in the right colour. Needs INITIAL_TOOL on the slicer's START_PRINT line.
+[gcode_macro _SAF_START_PRINT_BEFORE_LINE_PURGE]
+description: Load the print's first tool before the purge line (AFC + CFS)
+gcode:
+  {% if params.INITIAL_TOOL is defined %}
+    T{params.INITIAL_TOOL}
+  {% endif %}
+```
+
+In OrcaSlicer: `START_PRINT EXTRUDER_TEMP=[nozzle_temperature_initial_layer]
+BED_TEMP=[bed_temperature_initial_layer_single] INITIAL_TOOL=[initial_no_support_extruder]`
+as the first line of the machine start G-code, and `T[next_extruder]` as the change
+filament G-code (prime tower and ramming off, "Retraction when switching material" 0).
+
+Keep `_SAF_NOZZLE_WIPE` only in `AFC/AFC_CFS_wipe.cfg`: it must load after Simple AF's
+`loadcells_wipe.cfg`, which the `[include AFC/*.cfg]` at the end of `printer.cfg`
+guarantees. Defining it again in the custom macros file would make whichever file
+loads last win.
 
 ## Test plan — do these in order, at the printer
 
