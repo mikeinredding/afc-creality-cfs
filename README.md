@@ -9,9 +9,9 @@ Built for a **K1 / K1 Max with the CFS upgrade kit running
 [Simple AF](https://github.com/pellcorp/creality)**, but nothing here is K1-specific
 beyond the example config.
 
-> **Status: currently in testing on a real K1 and K1 Max.** Loads, purges, cuts,
-> unloads, 4-color prints with one box (K1) and 8-color prints with two boxes on
-> one chain (K1 Max) work; see the test prints below. Still new, so follow the
+> **Status: currently in testing on a K1 with one CFS and a K1 Max with two CFS
+> units.** Loads, purges, cuts, unloads, 4-color prints (K1) and 8-color prints
+> across both boxes (K1 Max) work; see the test prints below. Still new, so follow the
 > staged test plan in [docs/CFS.md](docs/CFS.md), stay at the printer for the
 > first sessions, and check [Known issues](#known-issues).
 
