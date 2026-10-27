@@ -91,7 +91,7 @@ are run by hand.
      from your stock config backup.
    - `tool_stn:` — sensor-to-nozzle distance (start around 60 and measure),
      `tool_stn_unload: 0`, `tool_load_speed: 10`.
-5. In `AFC_Macro_Vars.cfg`, set `variable_pin_loc_xy` to **your** measured cutter
+5. In `AFC_Macro_Vars.cfg`, set `variable_pin_loc_xy` (line 35) to **your** measured cutter
    lever position. Measure it by jogging from the console in small steps until the
    lever is pressed; don't copy someone else's numbers. The community has seen it
    move after the kit was re-seated.
@@ -150,34 +150,69 @@ redo the cutter calibration):
 | `Tn_extrude_velocity` | 360 mm/min | `purge_spd: 6` (mm/s) |
 | `clean_left/right_pos` | X 153.5–178, Y 225.3 | wiper, if you enable `wipe` later: `brush_loc: 165.75, 225.3, -1`, `brush_width: 24.5` |
 
-So, in `AFC.cfg`: `park_cmd: AFC_CFS_PARK`, `kick: False`, `wipe: True` with `wipe_cmd: AFC_CFS_PAD_WIPE` (see *Nozzle wipes* below), `default_material_temps: default: 220, …` (stock `Tn_extrude_temp: 220`; AFC uses the default when a lane has no material set),
-`post_load_macro: AFC_CFS_LEAVE_PURGE` and `post_unload_macro: AFC_CFS_LEAVE_PURGE`.
-The last two matter: after a load AFC restores the saved position Z first, so
+### Lines to change in AFC's own files
+
+These options already exist in the files the AFC installer writes, so **edit the
+line that is there** instead of adding a second copy: Klipper uses the *last*
+copy of an option in a section, so a line added above the default gets
+overridden by it. Line numbers are for a fresh install (AFC `main` and `DEV`,
+October 2026); if you added lines near the top of a file, search for the option
+name instead.
+
+`AFC/AFC.cfg`, section `[AFC]`:
+
+| Line | Option | Default | Set to |
+|---|---|---|---|
+| 17 | `default_material_temps` | `default: 235, …` | `default: 220, …` (stock `Tn_extrude_temp: 220`; used when a lane has no material set) |
+| 84 | `tool_cut` | `True` | `True` |
+| 86 | `tool_cut_cmd` | `AFC_CUT` | `AFC_CUT` |
+| 89 | `park` | `True` | `True` |
+| 90 | `park_cmd` | `AFC_PARK` | `AFC_CFS_PARK` |
+| 93 | `poop` | `True` | `True` |
+| 97 | `kick` | `True` | `False` |
+| 101 | `wipe` | `True` | `True` |
+| 102 | `wipe_cmd` | `AFC_BRUSH` | `AFC_CFS_PAD_WIPE` (see *Nozzle wipes* below) |
+| 113 | `post_load_macro` | commented out | remove the `# `: `post_load_macro: AFC_CFS_LEAVE_PURGE` |
+| 116 | `post_unload_macro` | commented out | remove the `# `: `post_unload_macro: AFC_CFS_LEAVE_PURGE` |
+
+`AFC/AFC_Macro_Vars.cfg`:
+
+| Line | Option | Default | K1 | K1 Max |
+|---|---|---|---|---|
+| | **`[gcode_macro _AFC_CUT_TIP_VARS]`** (line 26) | | | |
+| 35 | `variable_pin_loc_xy` | `-99, -99` | `42, 218.5` | `38, 300` |
+| 48 | `variable_cut_direction` | `"left"` | `"back"` | `"back"` |
+| 52 | `variable_pin_park_dist` | `6.0` | `6.0` | `6.0` |
+| 60 | `variable_cut_move_dist` | `8.5` | `6.5` | `7` |
+| 86 | `variable_retract_length` | `20` | `0` | `0` |
+| 92 | `variable_cut_count` | `2` | `1` | `1` |
+| 101 | `variable_pushback_length` | `15` | `0` | `0` |
+| | **`[gcode_macro _AFC_POOP_VARS]`** (line 159) | | | |
+| 164 | `variable_purge_loc_xy` | `-99, -99` | `148, 225.3` | `185, 305.5` |
+| 165 | `variable_purge_spd` | `6.5` | `6` | `6` |
+| 166 | `variable_z_purge_move` | `True` | `False` | `False` |
+| 191 | `variable_purge_length` | `72.111` | `140` | `140` |
+| | **`[gcode_macro _AFC_PARK_VARS]`** (line 268) | | | |
+| 272 | `variable_park_loc_xy` | `-99, -99` | `148, 225.3` | `185, 305.5` |
+
+Notes on the cutter values: `pin_loc_xy` and `cut_move_dist` are measured, so
+calibrate yours (see below); the full cut ends at `pin_loc_y + cut_move_dist`,
+about 1 mm past the point where the switch fires. `retract_length` 20 can drag the
+tip past the blade, and `pushback_length` must stay below `retract_length`.
+`cut_count: 1` is Creality's `cut_run_count`. `z_purge_move: True` would drop to
+Z 0.6 at the chute. `purge_length: 140` is stock; tune it down once colour changes
+are clean. `park_loc_xy` isn't used with `AFC_CFS_PARK`, but setting it silences
+AFC's warning.
+
+`printer.cfg` on a K1 Max: `[stepper_y] position_max` (about line 99 in a Simple AF
+`printer.cfg`, right after `[stepper_y]` near line 90; it moves with the probe you
+installed) from `306` to `307.5` (see *K1 Max values* below). The K1 needs no change.
+
+The two post macros matter: after a load AFC restores the saved position Z first, so
 without them the bed rises to the saved height + `z_hop` with the toolhead still
 over the chute and comes up into the purge hopper (seen on a K1), then the
 toolhead leaves diagonally. `AFC_CFS_LEAVE_PURGE` moves straight forward to
-`safe_y` first and waits for the hopper to spring back. In
-`AFC_Macro_Vars.cfg`:
-
-```ini
-[gcode_macro _AFC_CUT_TIP_VARS]
-variable_pin_loc_xy     : 42, 218.5     # measured on a K1; calibrate yours, see below
-variable_cut_direction  : "back"
-variable_pin_park_dist  : 6.0
-variable_cut_move_dist  : 6.5           # full cut at 225.0: 1 mm past the switch (224.0)
-variable_retract_length : 0             # AFC default 20 can drag the tip past the blade
-variable_pushback_length: 0             # must stay below retract_length
-variable_cut_count      : 1             # Creality's cut_run_count
-
-[gcode_macro _AFC_POOP_VARS]
-variable_purge_loc_xy   : 148, 225.3
-variable_z_purge_move   : False         # True would drop to Z 0.6 at the chute
-variable_purge_spd      : 6
-variable_purge_length   : 140           # stock; tune down once colour changes are clean
-
-[gcode_macro _AFC_PARK_VARS]
-variable_park_loc_xy    : 148, 225.3    # unused with AFC_CFS_PARK; set to silence AFC's warning
-```
+`safe_y` first and waits for the hopper to spring back.
 
 **Why `AFC_CFS_PARK`:** AFC_PARK can only raise Z relative to the current height. A
 load near the bed (first load of a print, or right after homing) would reach the
@@ -219,7 +254,7 @@ The Max's `box.cfg` differs from the K1's; these worked on a K1 Max with the CFS
 | What | K1 Max | Notes |
 |---|---|---|
 | Cutter | `pin_loc_xy: 38, 300`, `cut_move_dist: 7` | arm touches the pin at Y300, the switch fires at Y306 |
-| Y travel | `[stepper_y] position_max: 307.5` | Simple AF sets 306, which ends the cut exactly at the trigger; 307.5 is Creality's own CFS value (`gcode_position_max: 295` kept normal moves lower) |
+| Y travel | `[stepper_y] position_max: 307.5` (printer.cfg, about line 99) | Simple AF sets 306, which ends the cut exactly at the trigger; 307.5 is Creality's own CFS value (`gcode_position_max: 295` kept normal moves lower) |
 | Unload retract | `unload_retract_steps: 10:600, 10:1800` | stock `Tn_retrude: -20`; only 10 mm from the cutter to the gears (`buffer_empty_len`) |
 | Park / purge | X185 Y305.5, Z30; `safe_y: 291.5` | `AFC_CFS_PARK`, `_AFC_POOP_VARS`, `_AFC_PARK_VARS` |
 | Purge | `purge_spd: 6`, `purge_length: 140`, `tool_load_speed: 10` | 0.4 mm nozzle |
