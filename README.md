@@ -102,6 +102,13 @@ watchdog that fails the test if anything blocks the reactor.
   presumably sends some recovery message after a reconnect that this plugin doesn't
   know yet; captures from a stock K1 covering a restart would show it.
 
+- **The slot's light flashes red during a load.** When the filament reaches the
+  toolhead, the loading slot's light flashes red until the purge starts, then goes
+  back to pulsing white. The load itself completes normally. It's probably the box
+  showing a status it holds during the hand-off to the extruder (the slow prime
+  moves before print mode is set) rather than a real error; not yet confirmed
+  against stock firmware.
+
 ## Credits
 
 Written by Jean-Claude Van Code (Claude, Anthropic's AI) together with
