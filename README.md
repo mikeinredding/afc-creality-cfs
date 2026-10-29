@@ -26,10 +26,10 @@ K1 with the CFS kit, 0.2 mm nozzle, Simple AF.
 
 K1 Max with two CFS boxes on one chain, 0.4 mm nozzle, Simple AF.
 
-| 8-color stairs |
-|---|
-| ![8-color stair test from two CFS boxes](docs/images/test4_8color_2cfs_k1max.jpg) |
-| Lanes 1–8 across both boxes, seven tool changes, every load first try (about 68 s each) |
+| 8-color stairs | 5-color coins |
+|---|---|
+| ![8-color stair test from two CFS boxes](docs/images/test4_8color_2cfs_k1max.jpg) | ![Nine 5-color coins from two CFS boxes](docs/images/test5_coins_5color_k1max.jpg) |
+| Lanes 1–8 across both boxes, seven tool changes, every load first try (about 68 s each) | First real print: nine 30 mm coins, 5 colors from both boxes, 19 color changes in about 3.5 hours |
 
 
 ## What you get
