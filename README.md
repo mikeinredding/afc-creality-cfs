@@ -126,6 +126,10 @@ Special thanks to [Pellcorp](https://github.com/pellcorp) for
 [Simple AF](https://github.com/pellcorp/creality), which this runs on, and for the
 suggestion and encouragement to work on this.
 
+If you'd like to support CFS on Simple AF, or you find this work useful for your own
+projects, please consider a donation to Simple AF:
+[Support Simple AF](https://ko-fi.com/pellcorp49698?).
+
 Protocol knowledge from tomaspakosta/k1c-cfs-klipper, ityshchenko/klipper-cfs,
 gitstonelabs/creality-cfs-klipper, FrederickAlt's K1 CFS docs,
 fake-name/cfs-reverse-engineering and Jacob10383/k2-plus-custom-firmware.
