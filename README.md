@@ -37,6 +37,8 @@ K1 Max with two CFS boxes on one chain, 0.4 mm nozzle, Simple AF.
 - `[AFC_CFS <name>]` — one box: serial link, status polling, slot presence → AFC lanes
 - `[AFC_CFS_lane <name>]` — one slot (A–D): full tool load and cut + unload sequences
 - Lanes show up in Mainsail, Fluidd and GrumpyScreen's AFC panel like any other AFC lane
+- Optional RFID tag reading (Creality format): a tagged spool sets its lane's color,
+  material and weight, or its Spoolman spool (see [RFID tags](docs/CFS.md#rfid-tags))
 - `AFC_CFS_STATUS`, `AFC_CFS_RECONNECT`, `AFC_CFS_RAW` for bring-up and debugging
 - Optional trace recording of box traffic and every load/unload with timings, plus
   `tools/cfs_trace_summary.py` to digest it (see [Recording a trace](docs/CFS.md#recording-a-trace))

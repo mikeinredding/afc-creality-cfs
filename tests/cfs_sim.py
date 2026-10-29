@@ -65,6 +65,12 @@ class FakeCFS:
         self.log = []                 # (fn, data) of every request
         self.drop_replies = 0         # fault injection: swallow the next N replies
         self.drop_stage5_reply = 0    # fault injection: swallow the Nth stage 5 poll reply
+        # RFID: slot index (1-4) -> 40-char tag record. SET_PRE_LOADING RUN on a
+        # slot without a tag keeps the box busy for rfid_busy_delay seconds
+        # (a real box: about a minute) before it answers.
+        self.tags = {}
+        self.rfid_busy_delay = 0.0
+        self.preload_runs = []
         self.stage5_polls = 0
         self.garbage_before_reply = b""
         self.lock = threading.Lock()
@@ -151,6 +157,10 @@ class FakeCFS:
                         delay = box.stage_delays[stage]
                     elif stage == 5:
                         delay = box.stage5_delay
+                elif frame.fn == P.SET_PRE_LOADING and len(frame.data) > 1 \
+                        and frame.data[1] == P.PRELOAD_RUN \
+                        and not any(box.tags.get(i) for i in P.bits_to_slots(frame.data[0])):
+                    delay = box.rfid_busy_delay
                 elif frame.fn == P.RETRUDE_PROCESS and len(frame.data) > 1 \
                         and frame.data[0] and frame.data[1] == 1:
                     delay = box.reel_delay
@@ -205,7 +215,14 @@ class FakeCFS:
                 self.tighten = bool(f.data[0])
                 return self._reply(a, P.ST_OK, f.fn)
             if f.fn == P.SET_PRE_LOADING:
+                if len(f.data) > 1 and f.data[1] == P.PRELOAD_RUN:
+                    self.preload_runs.append(f.data[0])
                 return self._reply(a, P.ST_OK, f.fn)
+            if f.fn == P.GET_RFID:
+                mask = f.data[0] if f.data else 0
+                text = "".join("{}:{};".format(P.slot_letter(i), self.tags.get(i, "unknown"))
+                               for i in P.bits_to_slots(mask))
+                return self._reply(a, P.ST_OK, f.fn, text.encode("ascii"))
             if f.fn == P.EXTRUDE_PROCESS:
                 return self._extrude(a, f)
             if f.fn == P.RETRUDE_PROCESS:

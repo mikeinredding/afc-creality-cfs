@@ -45,6 +45,11 @@ SCENARIOS = [
     "two_boxes_by_uid",
     "two_boxes_load_while_polling",
     "stage5_reply_lost",
+    "rfid_insert_reads_tag",
+    "rfid_no_tag_box_busy",
+    "rfid_box_silent_longer",
+    "rfid_spoolman_id",
+    "rfid_not_during_print",
     "wrong_box_at_address",
     "single_box_without_uid",
 ]

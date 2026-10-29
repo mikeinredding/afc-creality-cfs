@@ -417,6 +417,57 @@ The summary gives load/unload success per slot, timings, stage 7 replies, retrie
 reply latency per command, non-OK box replies, timeouts, and a timeline of failures
 and markers. When reporting a problem, attach the trace file(s) and `klippy.log`.
 
+## RFID tags
+
+Each CFS slot has an RFID reader. Creality RFID spools, and tags written with
+community tools in the same format, carry the spool's material, color and size. With
+`rfid_read: True` in an `[AFC_CFS]` section, the plugin reads a spool's tag once when
+it goes into a slot, then sets the lane with AFC's own commands:
+
+- `SET_COLOR`, `SET_MATERIAL` and `SET_WEIGHT` from the tag, so Mainsail, GrumpyScreen
+  and Orca (through AFC's lane data) show the right filament;
+- or `SET_SPOOL_ID`, if the tag carries a Spoolman spool ID (a number in the tag's
+  reserved field, as Jacob10383's K2 firmware uses it) and AFC has Spoolman. AFC then
+  takes color, material and weight from Spoolman.
+
+A lane that already has a Spoolman spool is left alone. Nothing is read during a print
+(a spool inserted mid-print is read after it ends), or while any slot of that box is
+loaded to the toolhead (untested; the read waits until the box is unloaded).
+
+Read one by hand: `AFC_CFS_READ_TAG LANE=lane4`. `APPLY=0` only reports the tag;
+`SPIN=0` skips turning the slot first. `AFC_CFS_STATUS` shows the last tag per lane.
+
+**How the read works.** Like the stock `BOX_INFO_REFRESH` macro, the slot is turned
+briefly (`SET_PRE_LOADING RUN`), then the box is asked for the tag (`GET_RFID`). On a
+slot **without** a tag the box can stay busy and silent for about a minute after the
+turn; the plugin waits for it (`rfid_busy_timeout`, 90 s) and doesn't mark the box
+offline. Other boxes on the chain aren't polled meanwhile.
+
+**Tag format** (40 characters, community documented; checked against a real tag):
+
+| Field | Chars | Example | Meaning |
+|---|---|---|---|
+| date | 5 | `AB124` | date code |
+| vendor | 4 | `0276` | Creality |
+| batch | 2 | `A2` | |
+| filament id | 6 | `100002` | `1` + 5-digit material code |
+| color | 7 | `0E7A18E` | `0` + RRGGBB |
+| length | 4 | `0330` | 1 kg (`0247` 750 g, `0198` 600 g, `0165` 500 g, `0082` 250 g) |
+| serial | 6 | `000001` | |
+| reserved | 6 | `000000` | a number > 1 here = Spoolman spool ID |
+
+Material codes the plugin knows: `00001` Generic PLA, `00002` Generic PLA-Silk,
+`01001` Hyper PLA (all set as PLA). For any other code the console names it; add it
+with `rfid_materials: <code>=<MATERIAL>, ...`.
+
+Options (`[AFC_CFS]`): `rfid_read` (False), `rfid_insert_delay` (10 s),
+`rfid_spin` (True), `rfid_busy_timeout` (90 s), `rfid_read_attempts` (3),
+`rfid_retry_interval` (5 s), `rfid_materials`.
+
+If a tagged spool reads as no tag, the tag is probably on the side facing away from
+the reader; turn the spool around. The box's remaining-length reply (`GET_REMAIN_LEN`)
+came back as "not known" in testing, so remaining filament isn't used.
+
 ## Known unknowns
 
 - **Motor commands block.** The box answers `EXTRUDE_PROCESS` / `RETRUDE_PROCESS`
@@ -431,7 +482,9 @@ and markers. When reporting a problem, attach the trace file(s) and `klippy.log`
   testing used 2. If stage 7 returns `PARAMS_ERR`, try `stage7_arg: 2`.
 - The stock handoff retries stage 7 with measuring-wheel verification; this
   implementation does a single handoff and relies on `load_attempts`.
-- Multiple boxes on one bus (`box_addr` 2-4) are simulator-tested only.
+- Multiple boxes on one bus: two boxes tested on a K1 Max; three or four are
+  simulator-tested only.
+- RFID: tested with one tag written by a third-party tool; no Creality-made spool yet.
 - `eject_lane` / `AFC_CFS_EJECT` works on a K1 (it reeled a cut, retracted lane
   back and recovered a failed unload).
 

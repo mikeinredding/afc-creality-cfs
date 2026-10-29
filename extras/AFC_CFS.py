@@ -687,6 +687,22 @@ class afcCFS(afcUnit):
         # Optional cutter switch on the CFS toolhead kit (Klipper MCU pin)
         self.cutter_sensor_pin = config.get("cutter_sensor_pin", None)
 
+        # --- RFID tags (Creality format) ---
+        # Read a spool's tag once when it goes into a slot and set the lane's
+        # colour, material and weight (or its Spoolman spool, if the tag has
+        # an ID). Never during a print. Off by default.
+        self.rfid_read = config.getboolean("rfid_read", False)
+        # Wait after the spool is detected, so the box finishes drawing it in
+        self.rfid_insert_delay = config.getfloat("rfid_insert_delay", 10.0, minval=0.)
+        # Turn the slot first (SET_PRE_LOADING RUN), like stock BOX_INFO_REFRESH.
+        # With no tag the box can stay busy for about a minute.
+        self.rfid_spin = config.getboolean("rfid_spin", True)
+        self.rfid_busy_timeout = config.getfloat("rfid_busy_timeout", 90.0, minval=5.)
+        self.rfid_read_attempts = config.getint("rfid_read_attempts", 3, minval=1)
+        self.rfid_retry_interval = config.getfloat("rfid_retry_interval", 5.0, minval=0.)
+        # Extra Creality material codes, "CODE=MATERIAL, ..." (e.g. 00003=PETG)
+        self.rfid_materials = self._parse_materials(config.get("rfid_materials", ""))
+
     def _init_cfs_runtime(self) -> None:
         self.cutter_sensor_state = False
         self.cutter_trigger_count = 0
@@ -724,6 +740,26 @@ class afcCFS(afcUnit):
         self._operation_depth = 0
         self._quiet_requests = False
         self._poll_timer = None
+        # RFID: last tag read per lane, lanes waiting for a read, read in progress
+        self.lane_tags: Dict[str, Optional[Dict[str, Any]]] = {}
+        self._rfid_queue: Dict[str, float] = {}
+        self._rfid_timer = None
+        self._rfid_busy = False
+
+    @staticmethod
+    def _parse_materials(value: str) -> Dict[str, str]:
+        table = {}
+        for item in (value or "").split(","):
+            item = item.strip()
+            if not item:
+                continue
+            code, sep, material = item.partition("=")
+            code = code.strip()
+            if not sep or len(code) != 5 or not code.isdigit() or not material.strip():
+                raise CONFIG_ERROR(
+                    "rfid_materials: expected 'CODE=MATERIAL' with a 5-digit code, got '{}'".format(item))
+            table[code] = material.strip()
+        return table
 
     @staticmethod
     def _parse_steps(value: str):
@@ -757,6 +793,9 @@ class afcCFS(afcUnit):
         if self._poll_timer is not None:
             self.reactor.unregister_timer(self._poll_timer)
             self._poll_timer = None
+        if self._rfid_timer is not None:
+            self.reactor.unregister_timer(self._rfid_timer)
+            self._rfid_timer = None
         self.transport.close()
         self.trace.event("trace_stop", reason="klippy disconnect")
         self.trace.stop()
@@ -894,9 +933,12 @@ class afcCFS(afcUnit):
                                        retries=retries, motor=motor,
                                        quiet=self._quiet_requests)
         if reply is None:
-            self._consecutive_failures += 1
-            if self._consecutive_failures >= self.offline_after:
-                self._set_offline("no reply to {}".format(P.fn_name(fn)))
+            # A box turning a slot to find a tag answers nothing for a while;
+            # that isn't the box going away
+            if not self._rfid_busy:
+                self._consecutive_failures += 1
+                if self._consecutive_failures >= self.offline_after:
+                    self._set_offline("no reply to {}".format(P.fn_name(fn)))
         else:
             self._consecutive_failures = 0
             if not self.online:
@@ -1125,6 +1167,164 @@ class afcCFS(afcUnit):
             self.reactor.pause(self.reactor.monotonic() + 1.0)
             self.connect()
 
+    # -- RFID tags ---------------------------------------------------------
+
+    def on_filament_insert(self, lane: AFCLane):
+        super().on_filament_insert(lane)
+        if self.rfid_read:
+            self.queue_tag_read(lane, self.rfid_insert_delay)
+
+    def on_filament_remove(self, lane: AFCLane):
+        super().on_filament_remove(lane)
+        self._rfid_queue.pop(lane.name, None)
+        self.lane_tags.pop(lane.name, None)
+
+    def queue_tag_read(self, lane: AFCLane, delay: float = 0.) -> None:
+        """Read this lane's tag once the box is free (never during a print)."""
+        due = self.reactor.monotonic() + delay
+        self._rfid_queue[lane.name] = due
+        if self._rfid_timer is None:
+            self._rfid_timer = self.reactor.register_timer(self._rfid_tick, due)
+        else:
+            self.reactor.update_timer(self._rfid_timer, min(self._rfid_queue.values()))
+
+    def _job_active(self) -> bool:
+        printer = getattr(self, "printer", None)
+        stats = printer.lookup_object("print_stats", None) if printer is not None else None
+        if stats is None:
+            return False
+        try:
+            return stats.get_status(self.reactor.monotonic()).get("state") in ("printing", "paused")
+        except Exception:
+            return False
+
+    def tag_read_blocker(self, lane: AFCLane) -> Optional[str]:
+        """Why this lane's tag can't be read right now, or None."""
+        if self._job_active():
+            return "a print is running"
+        if not self.online:
+            return "box offline"
+        if self.bus.operation_active or self.transport.busy:
+            return "box busy"
+        if getattr(lane, "tool_loaded", False) or (
+                self.connected_mask is not None and self.connected_mask & lane.slot_bits):
+            return "lane is loaded"
+        # Untested: turning one slot while another of this box is loaded
+        # (that slot is in print mode). Wait until the box is unloaded.
+        if self.connected_mask or any(getattr(l, "tool_loaded", False)
+                                      for l in self.lanes.values()):
+            return "another slot of this box is loaded"
+        if self.material_mask is not None and not self.material_mask & lane.slot_bits:
+            return "slot is empty"
+        return None
+
+    def _rfid_tick(self, eventtime: float) -> float:
+        if not self._rfid_queue:
+            self._rfid_timer = None
+            return self.reactor.NEVER
+        name, due = min(self._rfid_queue.items(), key=lambda kv: kv[1])
+        if due > eventtime:
+            return due
+        lane = self.lanes.get(name)
+        if lane is None:
+            self._rfid_queue.pop(name, None)
+            return eventtime
+        blocker = self.tag_read_blocker(lane)
+        if blocker in ("slot is empty", "lane is loaded"):
+            self._rfid_queue.pop(name, None)
+        elif blocker is not None:
+            # Try again later (after the print, once the box is free)
+            self._rfid_queue[name] = eventtime + 10.0
+        else:
+            self._rfid_queue.pop(name, None)
+            try:
+                tag = self.read_tag(lane)
+                if tag is not None:
+                    self.apply_tag(lane, tag, self.afc.gcode.run_script)
+            except Exception:
+                self.logger.warning("CFS {}: tag read failed\n{}".format(
+                    lane.name, traceback.format_exc()))
+        if not self._rfid_queue:
+            self._rfid_timer = None
+            return self.reactor.NEVER
+        return min(self._rfid_queue.values())
+
+    def read_tag(self, lane: AFCLane, spin: Optional[bool] = None) -> Optional[Dict[str, Any]]:
+        """
+        Ask the box for a slot's tag. Returns the decoded tag, or None if the
+        box has none for it. Like stock BOX_INFO_REFRESH, the slot is turned
+        first (SET_PRE_LOADING RUN) so the reader can see the tag.
+        """
+        spin = self.rfid_spin if spin is None else spin
+        bits = lane.slot_bits
+        record = None
+        replies = []
+        self._rfid_busy = True
+        try:
+            with self.operation():
+                if spin:
+                    # Answered once the box is done; with no tag that can be
+                    # about a minute
+                    self.pre_loading(P.PRELOAD_RUN, bits, timeout=self.rfid_busy_timeout)
+                for attempt in range(self.rfid_read_attempts):
+                    reply = self.request(P.GET_RFID, bytes([bits]), timeout=2.0)
+                    if reply is not None:
+                        replies.append(P.decode_ascii(reply.data))
+                        record = P.parse_rfid_reply(reply.data).get(lane.index)
+                        if record:
+                            break
+                    if attempt + 1 < self.rfid_read_attempts:
+                        self.reactor.pause(self.reactor.monotonic() + self.rfid_retry_interval)
+                if spin:
+                    self.pre_loading(P.PRELOAD_CLOSE)
+        finally:
+            self._rfid_busy = False
+        tag = P.decode_rfid_record(record, self.rfid_materials) if record else None
+        self.lane_tags[lane.name] = tag
+        self.trace.event("rfid", lane=lane.name, slot=lane.slot_name, spin=spin,
+                         replies=replies, tag=tag)
+        self.logger.info("CFS {}: slot {} tag: {}".format(
+            lane.name, lane.slot_name, self._tag_summary(tag)))
+        return tag
+
+    @staticmethod
+    def _tag_summary(tag: Optional[Dict[str, Any]]) -> str:
+        if tag is None:
+            return "none"
+        parts = [tag["material"] or "material code {}".format(tag["material_code"])]
+        if tag["color"]:
+            parts.append("#" + tag["color"])
+        if tag["weight"]:
+            parts.append("{} g".format(tag["weight"]))
+        if tag["spool_id"]:
+            parts.append("Spoolman spool {}".format(tag["spool_id"]))
+        return ", ".join(parts)
+
+    def apply_tag(self, lane: AFCLane, tag: Dict[str, Any], run_gcode) -> List[str]:
+        """Set the lane from its tag with AFC's own commands. A Spoolman ID on
+        the tag wins; a lane that already has a Spoolman spool is left alone."""
+        cmds = []
+        if tag.get("spool_id") and getattr(self.afc, "spoolman", None) is not None:
+            cmds.append("SET_SPOOL_ID LANE={} SPOOL_ID={}".format(lane.name, tag["spool_id"]))
+        elif getattr(lane, "spool_id", None):
+            self.logger.info("CFS {}: lane has Spoolman spool {}; tag not applied".format(
+                lane.name, lane.spool_id))
+        else:
+            if tag.get("color"):
+                cmds.append("SET_COLOR LANE={} COLOR={}".format(lane.name, tag["color"]))
+            if tag.get("material"):
+                cmds.append("SET_MATERIAL LANE={} MATERIAL={}".format(lane.name, tag["material"]))
+            elif tag.get("material_code"):
+                self.logger.info(
+                    "CFS {}: material code {} isn't known; add it to rfid_materials in "
+                    "[AFC_CFS {}], e.g. rfid_materials: {}=PETG".format(
+                        lane.name, tag["material_code"], self.name, tag["material_code"]))
+            if tag.get("weight"):
+                cmds.append("SET_WEIGHT LANE={} WEIGHT={}".format(lane.name, tag["weight"]))
+        for cmd in cmds:
+            run_gcode(cmd)
+        return cmds
+
     def apply_lane_state(self, cur_lane: AFCLane, present: bool) -> str:
         """Set a lane's presence and LEDs from the box's sensor; returns a
         PREP-style status message."""
@@ -1292,9 +1492,12 @@ class afcCFS(afcUnit):
             "  trace: {}".format(self._trace_summary()),
         ]
         for lane in self.lanes.values():
-            lines.append("  {} -> slot {}: {}".format(
+            line = "  {} -> slot {}: {}".format(
                 lane.name, P.slot_letter(lane.index),
-                "present" if material is not None and material & P.slot_bit(lane.index) else "empty"))
+                "present" if material is not None and material & P.slot_bit(lane.index) else "empty")
+            if lane.name in self.lane_tags:
+                line += ", tag: {}".format(self._tag_summary(self.lane_tags[lane.name]))
+            lines.append(line)
         gcmd.respond_info("\n".join(lines))
 
     cmd_AFC_CFS_RECONNECT_help = "Close and reopen the link to a CFS box"

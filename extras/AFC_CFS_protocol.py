@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 import struct
-from typing import List, NamedTuple, Optional
+from typing import Any, Dict, List, NamedTuple, Optional
 
 DEFAULT_BAUD = 230400
 
@@ -267,3 +267,65 @@ def decode_ascii(data: bytes) -> Optional[str]:
         return bytes(data).decode("ascii").strip("\x00")
     except UnicodeDecodeError:
         return None
+
+
+# --- RFID tags (GET_RFID) ----------------------------------------------------
+# The box answers GET_RFID [slot_bits] with ASCII "<letter>:<record>;" per
+# slot, "<letter>:unknown;" when it has no tag for it. The record is Creality's
+# 40-character tag format (community documented, verified on a real tag):
+#   date 5 | vendor 4 | batch 2 | filament id 6 ('1' + 5-digit material code)
+#   | color 7 ('0' + RRGGBB) | length 4 | serial 6 | reserved 6
+# Jacob10383's K2 firmware treats an integer > 1 in "reserved" as a Spoolman
+# spool ID; tag writers can put one there.
+
+RFID_RECORD_LEN = 40
+
+# Length code -> spool weight in grams
+RFID_LENGTH_GRAMS = {"0330": 1000, "0247": 750, "0198": 600, "0165": 500, "0082": 250}
+
+# Creality material codes -> AFC material. Only codes checked against a real
+# tag or the published catalogue; add others with rfid_materials.
+RFID_MATERIALS = {
+    "00001": "PLA",      # Generic PLA
+    "00002": "PLA",      # Generic PLA-Silk
+    "01001": "PLA",      # Hyper PLA
+}
+
+
+def parse_rfid_reply(data: bytes) -> Dict[int, Optional[str]]:
+    """GET_RFID reply -> {slot index (1-4): 40-char record, or None if unknown}."""
+    text = decode_ascii(data) or ""
+    result: Dict[int, Optional[str]] = {}
+    for part in text.split(";"):
+        part = part.strip()
+        if len(part) < 2 or part[1] != ":" or part[0] not in SLOT_LETTERS:
+            continue
+        index = SLOT_LETTERS.index(part[0]) + 1
+        record = part[2:]
+        result[index] = record if len(record) == RFID_RECORD_LEN and record.isalnum() else None
+    return result
+
+
+def decode_rfid_record(record: str, materials: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    """Split a 40-character tag record into its fields."""
+    if len(record) != RFID_RECORD_LEN:
+        raise ValueError("RFID record must be {} characters".format(RFID_RECORD_LEN))
+    table = dict(RFID_MATERIALS)
+    table.update(materials or {})
+    material_code = record[12:17]
+    color = record[18:24].upper()
+    reserved = record[34:40]
+    spool_id = int(reserved) if reserved.isdigit() and int(reserved) > 1 else None
+    return {
+        "record": record,
+        "date": record[0:5],
+        "vendor": record[5:9],
+        "batch": record[9:11],
+        "material_code": material_code,
+        "material": table.get(material_code),
+        "color": color if all(c in "0123456789ABCDEF" for c in color) else None,
+        "length_code": record[24:28],
+        "weight": RFID_LENGTH_GRAMS.get(record[24:28]),
+        "serial": record[28:34],
+        "spool_id": spool_id,
+    }

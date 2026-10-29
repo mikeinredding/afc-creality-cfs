@@ -790,6 +790,127 @@ def sc_single_box_without_uid(r):
     }, {}
 
 
+PINK_SILK = "AB1240276A21000020E7A18E0330000001000000"   # read from a real CFS
+
+
+def sc_rfid_insert_reads_tag(r):
+    """rfid_read on: a spool inserted into slot D is read once the delay
+    passes, and the lane gets its color, material and weight from the tag.
+    Box 1 slot D on a K1 Max returned exactly this record."""
+    sim = FakeCFS(addressed=True, material_mask=0b1001)
+    sim.tags = {4: PINK_SILK}
+    rig = Rig(r, sim, rfid_read=True, rfid_insert_delay=0.1, rfid_retry_interval=0.05)
+    rig.lane(1)
+    lane4 = rig.lane(4)
+    rig.afc.gcode.run_script = MagicMock()
+    rig.unit.connect()
+    rig.unit.read_material_mask()
+    rig.unit.queue_tag_read(lane4, rig.unit.rfid_insert_delay)
+    wait(r, 1.0)
+    cmds = [c.args[0] for c in rig.afc.gcode.run_script.call_args_list]
+    sim.close()
+    return {
+        "slot_turned_first": sim.preload_runs == [0x08],
+        "color_set": "SET_COLOR LANE=lane4 COLOR=E7A18E" in cmds,
+        "material_set": "SET_MATERIAL LANE=lane4 MATERIAL=PLA" in cmds,
+        "weight_set": "SET_WEIGHT LANE=lane4 WEIGHT=1000" in cmds,
+        "tag_remembered": (rig.unit.lane_tags.get("lane4") or {}).get("material_code") == "00002",
+        "box_still_online": rig.unit.online,
+    }, {"cmds": cmds, "preload_runs": sim.preload_runs}
+
+
+def sc_rfid_no_tag_box_busy(r):
+    """A slot without a tag: the box stays busy after the turn (about a minute
+    on a real box). The read waits it out, reports no tag, changes nothing on
+    the lane and doesn't mark the box offline."""
+    sim = FakeCFS(addressed=True, material_mask=0b0001)
+    sim.rfid_busy_delay = 1.5
+    rig = Rig(r, sim, rfid_busy_timeout=5.0, rfid_read_attempts=2, rfid_retry_interval=0.05)
+    lane1 = rig.lane(1)
+    rig.afc.gcode.run_script = MagicMock()
+    rig.unit.connect()
+    rig.unit.read_material_mask()
+    start = r.monotonic()
+    tag = rig.unit.read_tag(lane1)
+    took = r.monotonic() - start
+    sim.close()
+    return {
+        "no_tag": tag is None,
+        "waited_for_the_box": took >= 1.4,
+        "box_still_online": rig.unit.online,
+        "nothing_applied": rig.afc.gcode.run_script.call_count == 0,
+    }, {"seconds": round(took, 2)}
+
+
+def sc_rfid_box_silent_longer(r):
+    """The box stays silent longer than rfid_busy_timeout (seen on a real box
+    after turning an untagged slot). The tag request then waits for the late
+    reply instead of talking over the busy box, and the box stays online."""
+    sim = FakeCFS(addressed=True, material_mask=0b0001)
+    sim.rfid_busy_delay = 6.0
+    rig = Rig(r, sim, rfid_busy_timeout=5.0, rfid_read_attempts=1, resync_timeout=10.0)
+    lane1 = rig.lane(1)
+    rig.unit.connect()
+    rig.unit.read_material_mask()
+    tag = rig.unit.read_tag(lane1)
+    trace_ok = rig.unit.transport._outstanding == 0
+    sim.close()
+    return {
+        "no_tag": tag is None,
+        "late_reply_absorbed": trace_ok,
+        "box_still_online": rig.unit.online,
+        "consecutive_failures_reset": rig.unit._consecutive_failures == 0,
+    }, {}
+
+
+def sc_rfid_spoolman_id(r):
+    """A tag with a Spoolman spool ID in its reserved field sets the lane's
+    spool (AFC then takes color/material/weight from Spoolman)."""
+    sim = FakeCFS(addressed=True, material_mask=0b0010)
+    sim.tags = {2: PINK_SILK[:34] + "000042"}
+    rig = Rig(r, sim)
+    rig.afc.spoolman = "http://spoolman"
+    lane2 = rig.lane(2)
+    rig.unit.connect()
+    rig.unit.read_material_mask()
+    tag = rig.unit.read_tag(lane2, spin=False)
+    cmds = []
+    rig.unit.apply_tag(lane2, tag, cmds.append)
+    sim.close()
+    return {
+        "spool_id_decoded": tag is not None and tag["spool_id"] == 42,
+        "set_spool_id_only": cmds == ["SET_SPOOL_ID LANE=lane2 SPOOL_ID=42"],
+        "no_turn_with_spin_off": sim.preload_runs == [],
+    }, {"cmds": cmds}
+
+
+def sc_rfid_not_during_print(r):
+    """A spool inserted during a print isn't read until the print ends."""
+    sim = FakeCFS(addressed=True, material_mask=0b0001)
+    sim.tags = {1: PINK_SILK}
+    rig = Rig(r, sim, rfid_read=True, rfid_insert_delay=0.05)
+    lane1 = rig.lane(1)
+    rig.afc.gcode.run_script = MagicMock()
+    printing = {"on": True}
+    rig.unit._job_active = lambda: printing["on"]
+    rig.unit.connect()
+    rig.unit.read_material_mask()
+    rig.unit.queue_tag_read(lane1, 0.05)
+    wait(r, 0.5)
+    read_while_printing = bool(sim.preload_runs)
+    printing["on"] = False
+    # retries every 10 s while blocked; pull that forward for the test
+    rig.unit._rfid_queue["lane1"] = r.monotonic()
+    r.update_timer(rig.unit._rfid_timer, r.NOW)
+    wait(r, 0.5)
+    sim.close()
+    return {
+        "not_read_while_printing": not read_while_printing,
+        "read_after_print": sim.preload_runs == [0x01],
+        "applied_after_print": rig.afc.gcode.run_script.call_count > 0,
+    }, {"preload_runs": sim.preload_runs}
+
+
 SCENARIOS = {name[3:]: fn for name, fn in globals().items() if name.startswith("sc_")}
 
 

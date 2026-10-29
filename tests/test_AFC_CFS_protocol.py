@@ -85,3 +85,37 @@ def test_status_names():
     assert P.status_name(None) == "NO_REPLY"
     assert P.status_name(P.ST_EXTRUDE_ERR8) == "EXTRUDE_ERR8"
     assert P.status_name(0x7E) == "0x7E"
+
+
+def test_rfid_reply_from_hardware():
+    # GET_RFID [08] on a K1 Max box: a tag written for Generic PLA-Silk, pink
+    data = bytes.fromhex("443a414231323430323736413231303030303230453741313845"
+                         "303333303030303030313030303030303b")
+    assert P.parse_rfid_reply(data) == {4: "AB1240276A21000020E7A18E0330000001000000"}
+    tag = P.decode_rfid_record("AB1240276A21000020E7A18E0330000001000000")
+    assert tag["vendor"] == "0276"
+    assert tag["material_code"] == "00002"
+    assert tag["material"] == "PLA"
+    assert tag["color"] == "E7A18E"
+    assert tag["weight"] == 1000
+    assert tag["spool_id"] is None
+
+
+def test_rfid_reply_unknown_and_several_slots():
+    assert P.parse_rfid_reply(b"B:unknown;") == {2: None}
+    record = "AB1240276A21010010FFFFFF0165000001000000"
+    assert P.parse_rfid_reply("A:unknown;C:{};".format(record).encode()) == {1: None, 3: record}
+    assert P.parse_rfid_reply(b"") == {}
+    assert P.parse_rfid_reply(b"D:short;") == {4: None}
+
+
+def test_rfid_record_fields():
+    record = "AB1240276A21099990123ABC0082000001000042"
+    tag = P.decode_rfid_record(record)
+    assert tag["material"] is None                     # code not in the table
+    assert P.decode_rfid_record(record, {"09999": "PETG"})["material"] == "PETG"
+    assert tag["color"] == "123ABC"
+    assert tag["weight"] == 250
+    assert tag["spool_id"] == 42
+    with pytest.raises(ValueError):
+        P.decode_rfid_record("too short")

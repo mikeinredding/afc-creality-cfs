@@ -47,6 +47,7 @@ class AFCCFSLane(AFCLane):
     cmd_AFC_CFS_TOOL_LOAD_help = "Load a CFS lane into the toolhead"
     cmd_AFC_CFS_TOOL_UNLOAD_help = "Unload a CFS lane from the toolhead back to the box"
     cmd_AFC_CFS_EJECT_help = "Reel a CFS lane's filament back into the box (box motors only)"
+    cmd_AFC_CFS_READ_TAG_help = "Read a CFS lane's RFID tag and set its color/material"
 
     def __init__(self, config):
         super().__init__(config)
@@ -77,6 +78,9 @@ class AFCCFSLane(AFCLane):
         self.afc.gcode.register_mux_command("AFC_CFS_EJECT", "LANE", self.name,
                                             self.cmd_AFC_CFS_EJECT,
                                             desc=self.cmd_AFC_CFS_EJECT_help)
+        self.afc.gcode.register_mux_command("AFC_CFS_READ_TAG", "LANE", self.name,
+                                            self.cmd_AFC_CFS_READ_TAG,
+                                            desc=self.cmd_AFC_CFS_READ_TAG_help)
         self._register_frontend_compat_aliases()
 
     # -- plumbing ------------------------------------------------------------
@@ -601,6 +605,36 @@ class AFCCFSLane(AFCLane):
         if not ok:
             raise gcmd.error("CFS {}: eject did not finish cleanly: {}".format(self.name, detail))
 
+    def cmd_AFC_CFS_READ_TAG(self, gcmd: Any) -> None:
+        """
+        Read this lane's RFID tag (Creality format) and set the lane's color,
+        material and weight from it, or its Spoolman spool if the tag carries
+        an ID. Not during a print or with the lane loaded. Without a tag the
+        box can be busy for about a minute.
+
+        Usage
+        -----
+        `AFC_CFS_READ_TAG LANE=<lane> [SPIN=<0|1>] [APPLY=<0|1>]`
+
+        SPIN=0 skips turning the slot first; APPLY=0 only reports the tag.
+        """
+        unit = self.cfs
+        if not unit.online and not unit.connect():
+            raise gcmd.error("CFS {}: box is offline".format(self.name))
+        blocker = unit.tag_read_blocker(self)
+        if blocker is not None:
+            raise gcmd.error("CFS {}: can't read the tag now ({})".format(self.name, blocker))
+        spin = gcmd.get_int("SPIN", 1 if unit.rfid_spin else 0, minval=0, maxval=1)
+        tag = unit.read_tag(self, spin=bool(spin))
+        if tag is None:
+            gcmd.respond_info("CFS {} (slot {}): no tag found".format(self.name, self.slot_name))
+            return
+        gcmd.respond_info("CFS {} (slot {}) tag: {}\n  record {}".format(
+            self.name, self.slot_name, unit._tag_summary(tag), tag["record"]))
+        if gcmd.get_int("APPLY", 1, minval=0, maxval=1):
+            for cmd in unit.apply_tag(self, tag, self.afc.gcode.run_script_from_command):
+                gcmd.respond_info("  " + cmd)
+
     def get_status(self, eventtime=None, save_to_file=False):
         response = super().get_status(eventtime=eventtime, save_to_file=save_to_file)
         if not response or save_to_file:
@@ -608,6 +642,7 @@ class AFCCFSLane(AFCLane):
         response["cfs_slot"] = self.slot_name
         response["cfs_present"] = self._cfs_present_last
         response["cfs_last_load"] = dict(self.last_load_report)
+        response["cfs_tag"] = getattr(self.cfs, "lane_tags", {}).get(self.name)
         return response
 
 
