@@ -17,9 +17,8 @@ printer and follow the test plan below in order.
 
 | File | Role |
 |---|---|
-| `extras/AFC_CFS_protocol.py` | Framing, CRC8, frame parser, command constants. No Klipper imports. |
-| `extras/AFC_CFS.py` | `[AFC_CFS <name>]` unit. Owns the serial link, polls the box, mirrors slot presence into lanes. |
-| `extras/AFC_CFS_lane.py` | `[AFC_CFS_lane <name>]` lane. `AFC_CFS_TOOL_LOAD` / `AFC_CFS_TOOL_UNLOAD` run as AFC's `custom_load_cmd` / `custom_unload_cmd`. |
+| `extras/AFC_CFS.py` | Everything, in one file: the wire protocol (framing, CRC8, parser, command constants), the `[AFC_CFS <name>]` unit (serial link, polling, presence, RFID) and the lane sequences. |
+| `[AFC_lane <name>]` | Lanes are plain AFC lanes with `unit: <cfs>:<1-4>`, so Mainsail, Fluidd and GrumpyScreen show them like any other AFC lane. At connect the unit sets each lane's `custom_load_cmd` / `custom_unload_cmd` to its `AFC_CFS_TOOL_LOAD` / `AFC_CFS_TOOL_UNLOAD`. |
 | `templates/AFC_CFS_1.cfg` | Example config for one box. |
 
 The box connects over its built-in CH340 USB-RS485 adapter at 230400 baud.
@@ -56,6 +55,21 @@ toolhead sensor only clears once the box pulls the tip past it. The stub below
 the cut stays in the nozzle and is purged by the next load.
 AFC is told the tool is loaded/unloaded even when `AFC_CFS_TOOL_LOAD`/`UNLOAD`
 are run by hand.
+
+## Upgrading from `[AFC_CFS_lane]` sections
+
+Earlier versions had their own lane section, `[AFC_CFS_lane laneN]`, and three files
+in Klipper's extras. Lanes are now plain AFC lanes and everything is in `AFC_CFS.py`.
+After updating:
+
+1. Run `./install.sh` again. It links the one file and removes the old links
+   (`AFC_CFS_lane.py`, `AFC_CFS_protocol.py`).
+2. In each `AFC_CFS_*.cfg`, change every `[AFC_CFS_lane laneN]` to `[AFC_lane laneN]`.
+   Nothing else in the section changes (`unit: CFS_1:1`, `map:` and so on).
+3. Restart Klipper.
+
+Without step 2 Klipper stops with "Section 'afc_cfs_lane lane1' is not a valid config
+section".
 
 ## Setup on a K1 / K1 Max with Simple AF
 

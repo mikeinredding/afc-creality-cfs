@@ -1,4 +1,4 @@
-"""Framing, CRC and parser tests for AFC_CFS_protocol.
+"""Framing, CRC and parser tests for the CFS wire protocol (in AFC_CFS.py).
 
 The vectors are real traffic: the first group was captured with interceptty
 from a stock printer talking to a CFS (via ityshchenko/klipper-cfs), the second
@@ -11,7 +11,7 @@ import struct
 
 import pytest
 
-from extras import AFC_CFS_protocol as P
+from extras import AFC_CFS as P
 
 CAPTURED = [
     (0x01, 0x00, 0xA3, b"", "f7010300a3dd"),

@@ -7,7 +7,9 @@
 # never drives a CFS motor directly. This unit:
 #   - owns the serial link to one box (non-blocking, reactor-driven),
 #   - polls the box and mirrors per-slot filament presence into AFC lanes,
-#   - exposes the box operations that AFC_CFS_lane uses for tool load/unload.
+#   - runs tool load/unload for its lanes. Lanes are plain [AFC_lane]
+#     sections (unit: <name>:<1-4>); this unit sets their custom load/unload
+#     commands, so Mainsail/Fluidd/GrumpyScreen see them as ordinary lanes.
 #
 # STATUS: experimental. Protocol framing is validated against real captured
 # traffic; the load/unload sequences follow tomaspakosta/k1c-cfs-klipper's
@@ -21,11 +23,13 @@ import errno
 import json
 import os
 import queue
+import struct
+import sys
 import termios
 import threading
 import time
 import traceback
-from typing import TYPE_CHECKING, Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional
 
 import configfile
 
@@ -44,7 +48,7 @@ except Exception:
     raise CONFIG_ERROR(ERROR_STR.format(import_lib="AFC_unit", trace=traceback.format_exc()))
 
 try:
-    from extras.AFC_lane import AFCMoveWarning
+    from extras.AFC_lane import AFCLaneState, AFCMoveWarning
 except Exception:
     raise CONFIG_ERROR(ERROR_STR.format(import_lib="AFC_lane", trace=traceback.format_exc()))
 
@@ -53,10 +57,337 @@ try:
 except Exception:
     raise CONFIG_ERROR(ERROR_STR.format(import_lib="AFC_respond", trace=traceback.format_exc()))
 
-try:
-    from extras import AFC_CFS_protocol as P
-except Exception:
-    raise CONFIG_ERROR(ERROR_STR.format(import_lib="AFC_CFS_protocol", trace=traceback.format_exc()))
+
+
+# =========================================================================
+# Wire protocol
+#
+# Framing, CRC8, function codes and payload helpers. Plain Python, no Klipper
+# imports. The rest of this file refers to these as P.<name>.
+#
+# Protocol knowledge comes from the community reverse-engineering work of:
+#   - tomaspakosta/k1c-cfs-klipper   (hardware-validated client, PROTOCOL.md)
+#   - ityshchenko/klipper-cfs        (CRC8/framing + real captured traffic)
+#   - gitstonelabs/creality-cfs-klipper, FrederickAlt's K1 CFS docs,
+#     fake-name/cfs-reverse-engineering, Jacob10383/k2-plus-custom-firmware
+# All GPL-3.0, same as this project.
+# =========================================================================
+
+DEFAULT_BAUD = 230400
+
+FRAME_HEAD = 0xF7
+# Request "status" byte: 0xFF for normal box functions, 0x00 for the
+# auto-addressing family (0xA0-0xA3).
+REQ_STATUS_NORMAL = 0xFF
+REQ_STATUS_ADDRESSING = 0x00
+
+BROADCAST_BOXES = 0xFE
+BROADCAST_ALL = 0xFF
+
+# Function codes (numbering validated against real hardware by tomaspakosta).
+GET_RFID = 0x02
+GET_REMAIN_LEN = 0x03
+SET_BOX_MODE = 0x04
+GET_BUFFER_STATE = 0x05
+CTRL_CONNECTION_MOTOR_ACTION = 0x07
+GET_FILAMENT_SENSOR_STATE = 0x08
+GET_BOX_STATE = 0x0A
+SET_PRE_LOADING = 0x0D
+GET_MEASURING_WHEEL = 0x0E
+TIGHTEN_UP_ENABLE = 0x0F
+EXTRUDE_PROCESS = 0x10
+RETRUDE_PROCESS = 0x11
+GET_VERSION_SN = 0x14
+GET_HARDWARE_STATUS = 0x15
+MOVE_DISTANCE = 0x31
+CMD_SET_SLAVE_ADDR = 0xA0
+CMD_GET_SLAVE_INFO = 0xA1
+CMD_ONLINE_CHECK = 0xA2
+CMD_GET_ADDR_TABLE = 0xA3
+
+FN_NAMES = {
+    GET_RFID: "GET_RFID",
+    GET_REMAIN_LEN: "GET_REMAIN_LEN",
+    SET_BOX_MODE: "SET_BOX_MODE",
+    GET_BUFFER_STATE: "GET_BUFFER_STATE",
+    CTRL_CONNECTION_MOTOR_ACTION: "CTRL_CONNECTION_MOTOR_ACTION",
+    GET_FILAMENT_SENSOR_STATE: "GET_FILAMENT_SENSOR_STATE",
+    GET_BOX_STATE: "GET_BOX_STATE",
+    SET_PRE_LOADING: "SET_PRE_LOADING",
+    GET_MEASURING_WHEEL: "GET_MEASURING_WHEEL",
+    TIGHTEN_UP_ENABLE: "TIGHTEN_UP_ENABLE",
+    EXTRUDE_PROCESS: "EXTRUDE_PROCESS",
+    RETRUDE_PROCESS: "RETRUDE_PROCESS",
+    GET_VERSION_SN: "GET_VERSION_SN",
+    GET_HARDWARE_STATUS: "GET_HARDWARE_STATUS",
+    MOVE_DISTANCE: "MOVE_DISTANCE",
+    CMD_SET_SLAVE_ADDR: "CMD_SET_SLAVE_ADDR",
+    CMD_GET_SLAVE_INFO: "CMD_GET_SLAVE_INFO",
+    CMD_ONLINE_CHECK: "CMD_ONLINE_CHECK",
+    CMD_GET_ADDR_TABLE: "CMD_GET_ADDR_TABLE",
+}
+
+# Response status codes actually observed on hardware (not exhaustive).
+ST_OK = 0x00
+ST_PARAMS_ERR = 0x01
+ST_CRC_ERR = 0x02
+ST_STATE_ERR = 0x03
+ST_LENGTH_ERR = 0x04
+ST_EXTRUDE_ERR4 = 0x08
+ST_EXTRUDE_ERR8 = 0x0C
+ST_EXTRUDE_ERR10 = 0x0D
+ST_RETRUDE_DONE = 0x12  # treated as "retrude finished" by the stock firmware's recovery path
+ST_RETRUDE_ERR2 = 0x13
+ST_RETRUDE_ERR7 = 0x1A
+ST_UPDATE_STATE = 0x30  # informational, not an error
+
+STATUS_NAMES = {
+    ST_OK: "OK",
+    ST_PARAMS_ERR: "PARAMS_ERR",
+    ST_CRC_ERR: "CRC_ERR",
+    ST_STATE_ERR: "STATE_ERR",
+    ST_LENGTH_ERR: "LENGTH_ERR",
+    ST_EXTRUDE_ERR4: "EXTRUDE_ERR4",
+    ST_EXTRUDE_ERR8: "EXTRUDE_ERR8",
+    ST_EXTRUDE_ERR10: "EXTRUDE_ERR10",
+    ST_RETRUDE_DONE: "RETRUDE_DONE",
+    ST_RETRUDE_ERR2: "RETRUDE_ERR2",
+    ST_RETRUDE_ERR7: "RETRUDE_ERR7",
+    ST_UPDATE_STATE: "UPDATE_STATE",
+}
+
+# SET_BOX_MODE mode byte
+MODE_PRINT = 0x00
+MODE_IDLE = 0x01
+
+# CTRL_CONNECTION_MOTOR_ACTION action byte
+CONN_STOP = 0x00
+CONN_EXTRUDE = 0x01
+CONN_RETRUDE = 0x02
+
+# SET_PRE_LOADING action byte
+# GET_BOX_STATE data[3]: 0x02 while a slot is in print mode (SET_BOX_MODE
+# [slot][PRINT]), 0x00 in feed/change mode
+BOX_STATE_PRINT_LOCKED = 0x02
+
+PRELOAD_CLOSE = 0x00
+PRELOAD_OPEN = 0x01
+PRELOAD_RUN = 0x02
+PRELOAD_TIGHT = 0x03
+
+# GET_FILAMENT_SENSOR_STATE banks
+SENSOR_BANK_MATERIAL = 0x00
+SENSOR_BANK_CONNECTIONS = 0x01
+
+# GET_BUFFER_STATE values
+BUFFER_MIDDLE = 0x00
+BUFFER_FULL = 0x01
+BUFFER_EMPTY = 0x02
+
+# Slot bits, physical left-to-right. AFC lane index 1..4 maps to A..D.
+SLOT_BITS = (0x01, 0x02, 0x04, 0x08)
+SLOT_LETTERS = ("A", "B", "C", "D")
+SLOT_ALL = 0x0F
+
+# Upper bound on a sane length byte. Real frames seen are < 0x20; anything
+# huge means we've lost sync and should resync on the next 0xF7.
+MAX_LENGTH = 0x80
+
+
+class Frame(NamedTuple):
+    addr: int
+    status: int
+    fn: int
+    data: bytes
+
+    @property
+    def ok(self) -> bool:
+        return self.status == ST_OK
+
+    def status_name(self) -> str:
+        return status_name(self.status)
+
+    def hex(self) -> str:
+        return encode_frame(self.addr, self.status, self.fn, self.data).hex()
+
+
+def status_name(code: Optional[int]) -> str:
+    if code is None:
+        return "NO_REPLY"
+    return STATUS_NAMES.get(code, "0x%02X" % code)
+
+
+def fn_name(fn: int) -> str:
+    return FN_NAMES.get(fn, "0x%02X" % fn)
+
+
+def crc8(data: bytes) -> int:
+    """CRC-8, polynomial 0x07, no init/xorout."""
+    crc = 0
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            crc = ((crc << 1) ^ 0x07) if crc & 0x80 else (crc << 1)
+            crc &= 0xFF
+    return crc
+
+
+def encode_frame(addr: int, status: int, fn: int, data: bytes = b"") -> bytes:
+    """
+    head(0xF7) addr len status fn data... crc8
+
+    len counts status + fn + data + crc. The CRC covers len..data.
+    """
+    data = bytes(data)
+    length = 3 + len(data)
+    body = bytes([length, status & 0xFF, fn & 0xFF]) + data
+    return bytes([FRAME_HEAD, addr & 0xFF]) + body + bytes([crc8(body)])
+
+
+class FrameParser:
+    """
+    Incremental parser for the RX byte stream. Feed it whatever the serial
+    port produced; it returns every complete, CRC-valid frame and silently
+    resyncs past garbage. Bad-CRC frames are counted, not returned.
+    """
+
+    def __init__(self) -> None:
+        self._buf = bytearray()
+        self.crc_errors = 0
+        self.discarded_bytes = 0
+
+    def reset(self) -> None:
+        self._buf.clear()
+
+    def feed(self, chunk: bytes) -> List[Frame]:
+        self._buf.extend(chunk)
+        frames: List[Frame] = []
+        buf = self._buf
+        while True:
+            head = buf.find(FRAME_HEAD)
+            if head < 0:
+                self.discarded_bytes += len(buf)
+                buf.clear()
+                break
+            if head > 0:
+                self.discarded_bytes += head
+                del buf[:head]
+            if len(buf) < 3:
+                break
+            length = buf[2]
+            if length < 3 or length > MAX_LENGTH:
+                # Not a real header, skip this 0xF7 and look for the next one
+                self.discarded_bytes += 1
+                del buf[0]
+                continue
+            total = 3 + length
+            if len(buf) < total:
+                break
+            raw = bytes(buf[:total])
+            if crc8(raw[2:-1]) != raw[-1]:
+                self.crc_errors += 1
+                self.discarded_bytes += 1
+                del buf[0]
+                continue
+            del buf[:total]
+            frames.append(Frame(addr=raw[1], status=raw[3], fn=raw[4], data=raw[5:-1]))
+        return frames
+
+
+def decode_float_be(data: bytes) -> Optional[float]:
+    """Measuring wheel / stage-5 telemetry: 4-byte big-endian IEEE-754 float."""
+    if len(data) < 4:
+        return None
+    return struct.unpack(">f", bytes(data[:4]))[0]
+
+
+def slot_bit(index: int) -> int:
+    """AFC lane index (1..4) -> CFS slot bit."""
+    if index < 1 or index > 4:
+        raise ValueError("CFS slot index must be 1-4, got {}".format(index))
+    return SLOT_BITS[index - 1]
+
+
+def slot_letter(index: int) -> str:
+    return SLOT_LETTERS[index - 1]
+
+
+def bits_to_slots(mask: int) -> List[int]:
+    """Bitmask -> list of 1-based slot indices."""
+    return [i + 1 for i, bit in enumerate(SLOT_BITS) if mask & bit]
+
+
+def decode_ascii(data: bytes) -> Optional[str]:
+    try:
+        return bytes(data).decode("ascii").strip("\x00")
+    except UnicodeDecodeError:
+        return None
+
+
+# --- RFID tags (GET_RFID) ----------------------------------------------------
+# The box answers GET_RFID [slot_bits] with ASCII "<letter>:<record>;" per
+# slot, "<letter>:unknown;" when it has no tag for it. The record is Creality's
+# 40-character tag format (community documented, verified on a real tag):
+#   date 5 | vendor 4 | batch 2 | filament id 6 ('1' + 5-digit material code)
+#   | color 7 ('0' + RRGGBB) | length 4 | serial 6 | reserved 6
+# Jacob10383's K2 firmware treats an integer > 1 in "reserved" as a Spoolman
+# spool ID; tag writers can put one there.
+
+RFID_RECORD_LEN = 40
+
+# Length code -> spool weight in grams
+RFID_LENGTH_GRAMS = {"0330": 1000, "0247": 750, "0198": 600, "0165": 500, "0082": 250}
+
+# Creality material codes -> AFC material. Only codes checked against a real
+# tag or the published catalogue; add others with rfid_materials.
+RFID_MATERIALS = {
+    "00001": "PLA",      # Generic PLA
+    "00002": "PLA",      # Generic PLA-Silk
+    "01001": "PLA",      # Hyper PLA
+}
+
+
+def parse_rfid_reply(data: bytes) -> Dict[int, Optional[str]]:
+    """GET_RFID reply -> {slot index (1-4): 40-char record, or None if unknown}."""
+    text = decode_ascii(data) or ""
+    result: Dict[int, Optional[str]] = {}
+    for part in text.split(";"):
+        part = part.strip()
+        if len(part) < 2 or part[1] != ":" or part[0] not in SLOT_LETTERS:
+            continue
+        index = SLOT_LETTERS.index(part[0]) + 1
+        record = part[2:]
+        result[index] = record if len(record) == RFID_RECORD_LEN and record.isalnum() else None
+    return result
+
+
+def decode_rfid_record(record: str, materials: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
+    """Split a 40-character tag record into its fields."""
+    if len(record) != RFID_RECORD_LEN:
+        raise ValueError("RFID record must be {} characters".format(RFID_RECORD_LEN))
+    table = dict(RFID_MATERIALS)
+    table.update(materials or {})
+    material_code = record[12:17]
+    color = record[18:24].upper()
+    reserved = record[34:40]
+    spool_id = int(reserved) if reserved.isdigit() and int(reserved) > 1 else None
+    return {
+        "record": record,
+        "date": record[0:5],
+        "vendor": record[5:9],
+        "batch": record[9:11],
+        "material_code": material_code,
+        "material": table.get(material_code),
+        "color": color if all(c in "0123456789ABCDEF" for c in color) else None,
+        "length_code": record[24:28],
+        "weight": RFID_LENGTH_GRAMS.get(record[24:28]),
+        "serial": record[28:34],
+        "spool_id": spool_id,
+    }
+
+
+# The protocol names above, as P.<name>
+P = sys.modules[__name__]
 
 if TYPE_CHECKING:
     from gcode import GCodeCommand
@@ -562,10 +893,14 @@ def set_lane_sensors(lane, present: bool, connected_mask) -> None:
                             and connected_mask & P.slot_bit(lane.index))
 
 
+# Stock tip-forming wiggle, (distance_mm, speed_mm_per_min). Nets about -0.5mm.
+TIP_WIGGLE_STEPS = [(0.5, 600), (-5, 600), (2.5, 600), (-1.25, 600), (1.75, 600), (1, 60)]
+
+
 class afcCFS(afcUnit):
     """
-    One Creality CFS box. Lanes are [AFC_CFS_lane laneN] with unit: <name>:1..4
-    mapping to physical slots A..D (left to right).
+    One Creality CFS box. Lanes are plain [AFC_lane laneN] sections with
+    unit: <name>:1..4 mapping to physical slots A..D (left to right).
     """
 
     CALIBRATION_UNSUPPORTED = "CFS lanes are fed by the box itself; there is nothing to calibrate."
@@ -746,6 +1081,7 @@ class afcCFS(afcUnit):
         self._operation_depth = 0
         self._quiet_requests = False
         self._poll_timer = None
+        self._lane_commands = set()      # lanes whose AFC_CFS_* commands are registered
         # RFID: last tag read per lane, lanes waiting for a read, read in progress
         self.lane_tags: Dict[str, Optional[Dict[str, Any]]] = {}
         self._rfid_queue: Dict[str, float] = {}
@@ -786,7 +1122,8 @@ class afcCFS(afcUnit):
     # -- lifecycle ---------------------------------------------------------
 
     def handle_connect(self):
-        super().handle_connect()
+        super().handle_connect()     # AFC attaches this unit's lanes here
+        self._setup_lanes()
         if not self.cutter_sensor_pin:
             # One toolhead cutter: boxes on the chain share whichever box has the pin
             self.cutter_source = next((u for u in self.bus.units if u.cutter_sensor_pin), None)
@@ -1109,18 +1446,14 @@ class afcCFS(afcUnit):
                              previous=self._traced_mask)
             self._traced_mask = mask
         for lane in self.lanes.values():
-            update = getattr(lane, "cfs_update_presence", None)
-            if update is None:
-                continue
             try:
-                update(bool(mask & P.slot_bit(lane.index)))
+                self.update_lane_presence(lane, bool(mask & P.slot_bit(lane.index)))
             except ValueError:
                 pass
 
     def _mirror_connections(self, mask: int) -> None:
         for lane in self.lanes.values():
-            if hasattr(lane, "cfs_update_presence"):
-                lane._load_state = bool(mask & P.slot_bit(lane.index))
+            lane._load_state = bool(mask & P.slot_bit(lane.index))
 
     # -- AFC unit hooks ----------------------------------------------------
 
@@ -1140,15 +1473,13 @@ class afcCFS(afcUnit):
         if not self.online:
             # Unknown, not empty: the first poll after the box answers syncs
             # this lane quietly instead of treating it as a new spool.
-            if hasattr(cur_lane, "_cfs_present_last"):
-                cur_lane._cfs_present_last = None
+            cur_lane._cfs_present_last = None
             msg = "<span class=error--text>CFS NOT RESPONDING</span>"
             self.lane_not_ready(cur_lane)
         else:
             present = bool(self.material_mask is not None
                            and self.material_mask & P.slot_bit(cur_lane.index))
-            if hasattr(cur_lane, "_cfs_present_last"):
-                cur_lane._cfs_present_last = present
+            cur_lane._cfs_present_last = present
             msg = self.apply_lane_state(cur_lane, present)
 
         if assignTcmd:
@@ -1196,6 +1527,563 @@ class afcCFS(afcUnit):
             self.reactor.pause(self.reactor.monotonic() + 1.0)
             self.connect()
 
+    # =====================================================================
+    # Lanes
+    #
+    # Lanes are plain [AFC_lane laneN] sections with unit: <cfs>:<1-4>. The box
+    # owns the slot motor and sensors, so a lane has no prep/load pins and no
+    # stepper: presence comes from the poll, and tool load/unload are this
+    # unit's AFC_CFS_TOOL_LOAD / AFC_CFS_TOOL_UNLOAD, set as each lane's
+    # custom_load_cmd / custom_unload_cmd at connect.
+    #
+    # Load follows the stock sequence tomaspakosta/k1c-cfs-klipper validated on
+    # hardware: connection motor -> tighten -> EXTRUDE_PROCESS stages 0, 4, 5
+    # (until the toolhead sensor trips) -> prime -> stage 6 -> prime -> stage
+    # 7 -> mark slot PRINT. Unload cuts, runs RETRUDE start, retracts the
+    # extruder, then RETRUDE finish reels the slot back.
+    # =====================================================================
+
+    cmd_AFC_CFS_TOOL_LOAD_help = "Load a CFS lane into the toolhead"
+    cmd_AFC_CFS_TOOL_UNLOAD_help = "Unload a CFS lane from the toolhead back to the box"
+    cmd_AFC_CFS_EJECT_help = "Reel a CFS lane's filament back into the box (box motors only)"
+    cmd_AFC_CFS_READ_TAG_help = "Read a CFS lane's RFID tag and set its color/material"
+
+    def _setup_lanes(self) -> None:
+        """At connect, once AFC has attached this unit's lanes."""
+        for lane in list(self.lanes.values()):
+            self._setup_lane(lane)
+
+    def _setup_lane(self, lane: AFCLane) -> None:
+        where = "[AFC_lane {}]".format(lane.name)
+        if getattr(lane, "prep", None) is not None or getattr(lane, "load", None) is not None:
+            raise CONFIG_ERROR("{}: CFS lanes take filament presence from the box; "
+                               "remove prep/load pins".format(where))
+        if lane.index < 1 or lane.index > 4:
+            raise CONFIG_ERROR("{}: unit must be '{}:<1-4>' (slot A-D), got index {}".format(
+                where, self.name, lane.index))
+        # No load switch: AFC defaults _load_state to True; the box's
+        # connection sensor drives it instead (see set_lane_sensors)
+        lane._load_state = False
+        lane._cfs_present_last = None
+        lane.last_load_report = {}
+        if getattr(lane, "custom_load_cmd", None) is None:
+            lane.custom_load_cmd = "AFC_CFS_TOOL_LOAD LANE={}".format(lane.name)
+        if getattr(lane, "custom_unload_cmd", None) is None:
+            lane.custom_unload_cmd = "AFC_CFS_TOOL_UNLOAD LANE={}".format(lane.name)
+        if lane.name in self._lane_commands:
+            return
+        self._lane_commands.add(lane.name)
+        for cmd, handler in (("AFC_CFS_TOOL_LOAD", self.cmd_AFC_CFS_TOOL_LOAD),
+                             ("AFC_CFS_TOOL_UNLOAD", self.cmd_AFC_CFS_TOOL_UNLOAD),
+                             ("AFC_CFS_EJECT", self.cmd_AFC_CFS_EJECT),
+                             ("AFC_CFS_READ_TAG", self.cmd_AFC_CFS_READ_TAG)):
+            self.gcode.register_mux_command(
+                cmd, "LANE", lane.name,
+                lambda gcmd, lane=lane, handler=handler: handler(lane, gcmd),
+                desc=getattr(self, "cmd_{}_help".format(cmd)))
+
+    # -- lane plumbing -------------------------------------------------------
+
+    def _pause(self, seconds: float) -> None:
+        if seconds > 0:
+            self.reactor.pause(self.reactor.monotonic() + seconds)
+
+    def _e_move(self, distance: float, speed_mm_min: float, label: str) -> None:
+        """Extruder-only move that leaves the user's M82/M83 mode alone."""
+        self.afc.move_e_pos(distance, speed_mm_min / 60.0, "CFS {}".format(label), wait_tool=True)
+
+    @staticmethod
+    def _toolhead_sensor(lane: AFCLane) -> bool:
+        return bool(lane.get_toolhead_pre_sensor_state())
+
+    def _cutter(self) -> Any:
+        """The unit whose cutter switch to watch: the cutter is on the
+        toolhead, so a box without cutter_sensor_pin uses the chain's."""
+        return getattr(self, "cutter_source", None) or self
+
+    def _cutter_engaged(self) -> bool:
+        cutter = self._cutter()
+        return bool(cutter.cutter_sensor_pin and cutter.cutter_sensor_state)
+
+    def _lane_trace(self, lane: AFCLane, ev: str, **fields: Any) -> None:
+        self.trace.event(ev, lane=lane.name, slot=P.slot_letter(lane.index), **fields)
+
+    def _lane_fail(self, lane: AFCLane, message: str) -> None:
+        self._lane_trace(lane, "fail", message=message, toolhead_sensor=self._toolhead_sensor(lane))
+        self.logger.error("CFS {} (slot {}): {}".format(lane.name, P.slot_letter(lane.index), message))
+        self.afc.error.handle_lane_failure(lane, "CFS {}: {}".format(lane.name, message))
+
+    # -- presence from the box poll -------------------------------------------
+
+    def update_lane_presence(self, lane: AFCLane, present: bool) -> None:
+        """Called by the poll with this slot's material sensor state."""
+        if present == getattr(lane, "_cfs_present_last", None):
+            return
+        previous = getattr(lane, "_cfs_present_last", None)
+        lane._cfs_present_last = present
+        lane.prep_state = present
+        lane.loaded_to_hub = present
+        slot = P.slot_letter(lane.index)
+
+        if not getattr(lane, "_afc_prep_done", False):
+            self.afc.save_vars()
+            return
+        if previous is None:
+            # PREP ran while the box was offline: this is the first real
+            # reading, not an insert or a runout.
+            msg = self.apply_lane_state(lane, present)
+            if not present and not lane.tool_loaded:
+                lane.set_unloaded()
+            self.logger.info("CFS {}: box online, slot {}: {}".format(lane.name, slot, msg))
+            self.afc.save_vars()
+            return
+
+        if present:
+            self.logger.info("CFS {}: spool detected in slot {}".format(lane.name, slot))
+            if lane.status not in (AFCLaneState.LOADED, AFCLaneState.TOOLED,
+                                   AFCLaneState.TOOL_LOADED):
+                lane.set_loaded()
+            self.on_filament_insert(lane)
+        else:
+            self.logger.info("CFS {}: slot {} is empty".format(lane.name, slot))
+            self.on_filament_remove(lane)
+            if lane.tool_loaded and self.afc.function.is_printing():
+                self._lane_trace(lane, "runout", runout_lane=lane.runout_lane)
+                fila = getattr(lane, "fila_load", None)
+                if fila is not None and not fila.runout_helper.sensor_enabled:
+                    self.logger.warning("CFS runout on {} ignored, sensor disabled".format(lane.name))
+                elif lane.runout_lane is not None:
+                    # The tail is still in the path; let AFC's infinite spool decide.
+                    lane._perform_infinite_runout()
+                else:
+                    lane._perform_pause_runout()
+            elif not lane.tool_loaded:
+                lane.set_unloaded()
+        self.afc.save_vars()
+
+    # -- tool load -------------------------------------------------------------
+
+    def _stage5_feed(self, lane: AFCLane) -> tuple:
+        """
+        Poll EXTRUDE_PROCESS stage 5 (the box motor runs while we poll) until
+        the toolhead sensor trips. Stops early on timeout or when the measuring
+        wheel stops moving.
+        """
+        bits = P.slot_bit(lane.index)
+        start = self.reactor.monotonic()
+        last_progress_time = start
+        last_wheel: Optional[float] = None
+        polls = 0
+        while True:
+            if self._toolhead_sensor(lane):
+                return True, "toolhead sensor triggered after {} polls".format(polls)
+            now = self.reactor.monotonic()
+            if now - start > self.stage5_timeout:
+                return False, "timed out after {:.0f}s without reaching the toolhead sensor".format(
+                    now - start)
+            reply = self.extrude_stage(bits, 0x05)
+            polls += 1
+            if reply is not None and not reply.ok and reply.status != P.ST_UPDATE_STATE:
+                self.logger.debug("CFS {}: stage 5 status {}".format(lane.name, reply.status_name()))
+            wheel = P.decode_float_be(reply.data) if reply is not None else None
+            if wheel is not None:
+                if last_wheel is None or abs(wheel - last_wheel) >= self.stage5_stall_distance:
+                    last_wheel = wheel
+                    last_progress_time = now
+                elif now - last_progress_time > self.stage5_stall_time:
+                    if self._toolhead_sensor(lane):
+                        continue
+                    return False, "measuring wheel stalled at {:.1f}mm".format(wheel)
+            lane.last_load_report["stage5_polls"] = polls
+            lane.last_load_report["wheel"] = wheel
+            self._pause(self.stage5_poll_interval)
+
+    def _box_cleanup(self) -> None:
+        self.tighten_up(False)
+        self.connection_motor(P.CONN_STOP)
+        self.clear_latched_error()
+
+    def _load_attempt(self, lane: AFCLane, attempt: int) -> tuple:
+        bits = P.slot_bit(lane.index)
+        settle = self.stage_settle_time
+
+        self.pre_loading(P.PRELOAD_CLOSE)
+        status = self.read_box_status()
+        if status not in (None, P.ST_OK, P.ST_UPDATE_STATE):
+            self.logger.info("CFS {}: box reported {} before load, clearing".format(
+                lane.name, P.status_name(status)))
+        self.set_box_mode(P.MODE_IDLE)
+        self._pause(settle)
+
+        reply = self.connection_motor(P.CONN_EXTRUDE)
+        if reply is None:
+            return False, "box did not answer CTRL_CONNECTION_MOTOR_ACTION"
+        self._pause(0.5)
+        self.tighten_up(True)
+        self._pause(settle)
+
+        for stage in (0x00, 0x04):
+            reply = self.extrude_stage(bits, stage)
+            if reply is None:
+                self._box_cleanup()
+                return False, "no reply to EXTRUDE_PROCESS stage {}".format(stage)
+            if not reply.ok:
+                self._box_cleanup()
+                return False, "EXTRUDE_PROCESS stage {} returned {}".format(stage, reply.status_name())
+            self._pause(settle)
+
+        stage5_start = self.reactor.monotonic()
+        reached, detail = self._stage5_feed(lane)
+        self._lane_trace(lane, "stage5_result", reached=reached, detail=detail, attempt=attempt + 1,
+                         polls=lane.last_load_report.get("stage5_polls"),
+                         wheel=lane.last_load_report.get("wheel"),
+                         seconds=round(self.reactor.monotonic() - stage5_start, 2))
+        self.logger.info("CFS {}: stage 5 {}".format(lane.name, detail))
+        if not reached:
+            self._box_cleanup()
+            # Pull the partial feed back so the next attempt starts clean
+            self.retrude_stage(bits, 0x00)
+            self._pause(0.5)
+            self.retrude_stage(bits, 0x01)
+            self.clear_latched_error()
+            return False, detail
+
+        # Handoff: the toolhead extruder grabs the filament while the box
+        # finishes its stages.
+        if self.prime1_length > 0:
+            self._e_move(self.prime1_length, self.prime1_speed, "prime 1")
+        reply = self.extrude_stage(bits, 0x06)
+        lane.last_load_report["stage6"] = P.status_name(reply.status if reply else None)
+        if self.prime2_length > 0:
+            self._e_move(self.prime2_length, self.prime2_speed, "prime 2")
+        reply = self.extrude_stage(bits, 0x07, self.stage7_arg)
+        lane.last_load_report["stage7"] = P.status_name(reply.status if reply else None)
+        if reply is None or not reply.ok:
+            self.logger.warning("CFS {}: stage 7 returned {}".format(
+                lane.name, lane.last_load_report["stage7"]))
+        self._lane_trace(lane, "handoff", attempt=attempt + 1,
+                         stage6=lane.last_load_report["stage6"],
+                         stage7=lane.last_load_report["stage7"], stage7_arg=self.stage7_arg,
+                         toolhead_sensor=self._toolhead_sensor(lane))
+
+        # Mark this slot as the active PRINT slot: the box then runs its own
+        # buffer feed loop for the print. Nothing may send SET_BOX_MODE
+        # [00][01] (feed/change mode) after this until the next unload.
+        self.set_box_mode(P.MODE_PRINT, bits)
+        self.tighten_up(False)
+        self.connection_motor(P.CONN_STOP)
+        if self.clear_mode_after_load:
+            self.clear_latched_error()
+
+        if not self._toolhead_sensor(lane):
+            return False, "toolhead sensor cleared after the handoff"
+        return True, "loaded"
+
+    def cmd_AFC_CFS_TOOL_LOAD(self, lane: AFCLane, gcmd: Any) -> None:
+        """
+        Load this CFS lane to the nozzle. AFC calls this through custom_load_cmd
+        during a tool change; it can also be run by hand during bring-up.
+
+        Usage
+        -----
+        `AFC_CFS_TOOL_LOAD LANE=<lane>`
+        """
+        self.wait_for_tag_reads()   # a tag read keeps the box busy; finish it first
+        started = self.reactor.monotonic()
+        slot = P.slot_letter(lane.index)
+        self._lane_trace(lane, "load_start", toolhead_sensor=self._toolhead_sensor(lane))
+        lane.select_lane()
+        self.afc._check_extruder_temp(lane)
+        lane.last_load_report = {"slot": slot}
+
+        if not self.online and not self.connect():
+            self._lane_fail(lane, "box is offline ({})".format(self.transport.last_error or "no reply"))
+            return
+        if self._cutter_engaged():
+            self._lane_fail(lane, "cutter sensor is engaged; reset the cutter before loading")
+            return
+        if self._toolhead_sensor(lane):
+            self._lane_fail(lane, "toolhead sensor already sees filament; unload the other lane first")
+            return
+        mask = self.read_material_mask()
+        if mask is not None and not mask & P.slot_bit(lane.index):
+            self._lane_fail(lane, "no filament in slot {}".format(slot))
+            return
+
+        if self.afc.park and self.afc.park_cmd:
+            self.afc.gcode.run_script_from_command(
+                "{} EXTRUDER={}".format(self.afc.park_cmd, lane.extruder_obj.name))
+
+        attempts_used = 0
+        detail = ""
+        with self.operation():
+            for attempt in range(self.load_attempts):
+                attempts_used = attempt + 1
+                self.logger.info("CFS {}: loading slot {}, try {}/{}".format(
+                    lane.name, slot, attempt + 1, self.load_attempts))
+                try:
+                    ok, detail = self._load_attempt(lane, attempt)
+                except Exception as e:
+                    self._box_cleanup()
+                    ok, detail = False, "error: {}".format(e)
+                    self.logger.debug(traceback.format_exc())
+                if ok:
+                    break
+                self._lane_trace(lane, "load_attempt_failed", attempt=attempt + 1, detail=detail,
+                                 toolhead_sensor=self._toolhead_sensor(lane))
+                self.logger.warning("CFS {}: load attempt {} failed: {}".format(
+                    lane.name, attempt + 1, detail))
+                if self._toolhead_sensor(lane):
+                    # Filament is stuck in the toolhead; don't keep pushing.
+                    break
+            else:
+                ok = False
+
+        lane.last_load_report["result"] = detail
+        if not ok:
+            self._lane_trace(lane, "load_end", ok=False, detail=detail, attempts=attempts_used,
+                             seconds=round(self.reactor.monotonic() - started, 2))
+            self._lane_fail(lane, "load failed after {} attempt(s): {}".format(attempts_used, detail))
+            return
+
+        # The handoff already pushed prime1 + prime2 past the sensor.
+        remaining = lane.extruder_obj.tool_stn - (self.prime1_length + self.prime2_length)
+        if remaining > 0:
+            self.afc.move_e_pos(remaining, lane.extruder_obj.tool_load_speed,
+                                "CFS tool_stn", wait_tool=True)
+        lane._load_state = True          # our filament now occupies the shared path
+        self._mark_tool_state(lane, loaded=True)
+        self._lane_trace(lane, "load_end", ok=True, detail=detail, attempts=attempts_used,
+                         tool_stn_push=round(max(remaining, 0), 2),
+                         seconds=round(self.reactor.monotonic() - started, 2))
+
+    # -- tool unload -----------------------------------------------------------
+
+    def _run_cutter_sequence(self, lane: AFCLane) -> Optional[str]:
+        """
+        Run AFC's cut macro. With a cutter switch configured, verify it: the
+        switch must have fired during the cut (blade reached the end of its
+        travel, if cutter_require_trigger) and be released afterwards. Retries
+        the cut; returns None on success or the reason it failed.
+        """
+        if not self.afc.tool_cut:
+            return None
+        cutter = self._cutter()
+        reason = None
+        for attempt in range(max(self.load_attempts, 1) + 1):
+            triggers_before = getattr(cutter, "cutter_trigger_count", 0)
+            lane.extruder_obj.estats.increase_cut_total()
+            self.afc.gcode.run_script_from_command(
+                "{} EXTRUDER={}".format(self.afc.tool_cut_cmd, lane.extruder_obj.name))
+            if not cutter.cutter_sensor_pin:
+                self._lane_trace(lane, "cut", attempt=attempt + 1, verified=False)
+                return None
+            # Let the cut moves finish and the switch report arrive
+            toolhead = getattr(self.afc, "toolhead", None)
+            if toolhead is not None and hasattr(toolhead, "wait_moves"):
+                toolhead.wait_moves()
+            start = self.reactor.monotonic()
+            self._pause(0.1)
+            while self._cutter_engaged():
+                if self.reactor.monotonic() - start > cutter.cutter_wait_time:
+                    break
+                self._pause(0.01)
+            released = not self._cutter_engaged()
+            fired = getattr(cutter, "cutter_trigger_count", 0) > triggers_before
+            self._lane_trace(lane, "cut", attempt=attempt + 1, verified=True, fired=fired,
+                             released=released, seconds=round(self.reactor.monotonic() - start, 2))
+            if not released:
+                reason = "cutter sensor did not release after cutting"
+            elif not fired and cutter.cutter_require_trigger:
+                reason = ("cutter switch never fired during the cut (blade did not reach "
+                          "the end of its travel; check pin_loc_xy / cut_move_dist)")
+            else:
+                return None
+            self.logger.warning("CFS {}: cut {} not confirmed: {}".format(
+                lane.name, attempt + 1, reason))
+        return reason
+
+    def _run_post_cut_macros(self, lane: AFCLane) -> None:
+        if self.afc.park and self.afc.park_cmd:
+            self.afc.gcode.run_script_from_command(
+                "{} EXTRUDER={}".format(self.afc.park_cmd, lane.extruder_obj.name))
+        if self.afc.form_tip:
+            if self.afc.form_tip_cmd == "AFC":
+                self.printer.lookup_object("AFC_form_tip").tip_form()
+            else:
+                self.afc.gcode.run_script_from_command(self.afc.form_tip_cmd)
+
+    def _retract_to_box(self, lane: AFCLane) -> tuple:
+        """
+        After the cut, stock order (Hi captures, confirmed on a K1):
+          1. RETRUDE stage 0 (START) while the extruder gears still hold the
+             filament: the box pulls the buffer to its empty limit. With the
+             end already free it reels slack and fails RETRUDE_ERR2.
+          2. Extruder retract out of the gears (unload_retract_steps); the
+             now-empty buffer takes up the slack, so the gears don't click.
+          3. RETRUDE stage 1 (FINISH): the box reels the slot back and
+             answers when it has finished.
+        """
+        bits = P.slot_bit(lane.index)
+        self.pre_loading(P.PRELOAD_CLOSE)
+        self.set_box_mode(P.MODE_IDLE)
+        self._pause(self.stage_settle_time)
+
+        if self.unload_tip_wiggle:
+            for dist, speed in TIP_WIGGLE_STEPS:
+                self._e_move(dist, speed, "tip wiggle")
+
+        started = self.reactor.monotonic()
+        reply = self.retrude_stage(bits, 0x00)
+        start_status = P.status_name(reply.status if reply else None)
+        self._lane_trace(lane, "retrude_start", status=start_status,
+                         seconds=round(self.reactor.monotonic() - started, 2),
+                         toolhead_sensor=self._toolhead_sensor(lane))
+        if reply is None:
+            return False, "box did not answer RETRUDE start"
+        if not reply.ok:
+            # FINISH still works on its own (it recovered a failed unload on
+            # the K1), so carry on rather than leave filament in the path.
+            self.logger.warning("CFS {}: RETRUDE start returned {}".format(
+                lane.name, start_status))
+
+        for i, (dist, speed) in enumerate(self.unload_retract_steps):
+            self._e_move(-dist, speed, "unload retract {}".format(i + 1))
+            self._lane_trace(lane, "retract_step", step=i + 1, mm=dist, speed=speed,
+                             toolhead_sensor=self._toolhead_sensor(lane))
+
+        started = self.reactor.monotonic()
+        reply = self.retrude_stage(bits, 0x01)
+        finish_status = P.status_name(reply.status if reply else None)
+        reel_seconds = round(self.reactor.monotonic() - started, 2)
+        done = reply is not None and reply.ok
+        self.clear_latched_error()
+        self._lane_trace(lane, "reel", done=done, replies=[start_status, finish_status],
+                         seconds=reel_seconds, toolhead_sensor=self._toolhead_sensor(lane))
+
+        deadline = self.reactor.monotonic() + self.unload_timeout
+        while self._toolhead_sensor(lane):
+            if self.reactor.monotonic() > deadline:
+                return False, ("toolhead sensor still triggered {:.0f}s after reel-back "
+                               "(box start {}, finish {})".format(
+                                   self.unload_timeout, start_status, finish_status))
+            self._pause(0.5)
+        if not done:
+            return False, "box did not confirm reel-back (start {}, finish {})".format(
+                start_status, finish_status)
+        return True, "reeled back in {:.1f}s".format(reel_seconds)
+
+    def cmd_AFC_CFS_TOOL_UNLOAD(self, lane: AFCLane, gcmd: Any) -> None:
+        """
+        Cut and unload this CFS lane back to the box. AFC calls this through
+        custom_unload_cmd during a tool change.
+
+        Usage
+        -----
+        `AFC_CFS_TOOL_UNLOAD LANE=<lane>`
+        """
+        self.wait_for_tag_reads()   # a tag read keeps the box busy; finish it first
+        started = self.reactor.monotonic()
+        self._lane_trace(lane, "unload_start", toolhead_sensor=self._toolhead_sensor(lane))
+        lane.select_lane()
+        self.afc._check_extruder_temp(lane)
+        lane.disable_buffer()
+
+        if not self.online and not self.connect():
+            self._lane_fail(lane, "box is offline ({})".format(self.transport.last_error or "no reply"))
+            return
+        if self._cutter_engaged():
+            self._lane_fail(lane, "cutter sensor is engaged before cutting; check the cutter lever")
+            return
+        cut_problem = self._run_cutter_sequence(lane)
+        if cut_problem:
+            self._lane_fail(lane, cut_problem)
+            return
+        self._run_post_cut_macros(lane)
+
+        with self.operation():
+            try:
+                ok, detail = self._retract_to_box(lane)
+            except Exception as e:
+                self.clear_latched_error()
+                ok, detail = False, "error: {}".format(e)
+                self.logger.debug(traceback.format_exc())
+
+        self.logger.info("CFS {}: unload {}".format(lane.name, detail))
+        self._lane_trace(lane, "unload_end", ok=ok, detail=detail,
+                         seconds=round(self.reactor.monotonic() - started, 2))
+        if not ok:
+            self._lane_fail(lane, "unload failed: {}".format(detail))
+            return
+        lane._load_state = False         # reeled back past the merge
+        self._mark_tool_state(lane, loaded=False)
+
+    def _mark_tool_state(self, lane: AFCLane, loaded: bool) -> None:
+        """
+        Record the tool state in AFC. AFC's own TOOL_LOAD/TOOL_UNLOAD flow
+        does this after our custom command returns, but running
+        AFC_CFS_TOOL_LOAD/UNLOAD directly would otherwise leave AFC thinking
+        nothing (or the old lane) is in the toolhead. Setting it twice is
+        harmless.
+        """
+        try:
+            if loaded:
+                lane.set_tool_loaded(normal_toolchange=True)
+            else:
+                lane.set_tool_unloaded(normal_toolchange=True)
+            self.afc.save_vars()
+        except Exception as e:
+            self.logger.warning("CFS {}: could not record tool state: {}".format(lane.name, e))
+
+    def cmd_AFC_CFS_EJECT(self, lane: AFCLane, gcmd: Any) -> None:
+        """
+        Reel this lane's filament back into the box using only the box
+        motors. For filament that stopped short of the extruder gears (an
+        interrupted load); filament in the toolhead needs AFC_CFS_TOOL_UNLOAD.
+
+        Usage
+        -----
+        `AFC_CFS_EJECT LANE=<lane>`
+        """
+        self.wait_for_tag_reads()
+        if not self.online and not self.connect():
+            raise gcmd.error("CFS {}: box is offline".format(lane.name))
+        ok, detail = self.reel_back(lane)
+        gcmd.respond_info("CFS {} (slot {}) eject: {}".format(
+            lane.name, P.slot_letter(lane.index), detail))
+        if not ok:
+            raise gcmd.error("CFS {}: eject did not finish cleanly: {}".format(lane.name, detail))
+
+    def cmd_AFC_CFS_READ_TAG(self, lane: AFCLane, gcmd: Any) -> None:
+        """
+        Read this lane's RFID tag (Creality format) and set the lane's color,
+        material and weight from it, or its Spoolman spool if the tag carries
+        an ID. Not during a print or with the lane loaded. Without a tag the
+        box can be busy for about a minute.
+
+        Usage
+        -----
+        `AFC_CFS_READ_TAG LANE=<lane> [SPIN=<0|1>] [APPLY=<0|1>]`
+
+        SPIN=0 skips turning the slot first; APPLY=0 only reports the tag.
+        """
+        slot = P.slot_letter(lane.index)
+        if not self.online and not self.connect():
+            raise gcmd.error("CFS {}: box is offline".format(lane.name))
+        blocker = self.tag_read_blocker(lane)
+        if blocker is not None:
+            raise gcmd.error("CFS {}: can't read the tag now ({})".format(lane.name, blocker))
+        spin = gcmd.get_int("SPIN", 1 if self.rfid_spin else 0, minval=0, maxval=1)
+        tag = self.read_tag(lane, spin=bool(spin))
+        if tag is None:
+            gcmd.respond_info("CFS {} (slot {}): no tag found".format(lane.name, slot))
+            return
+        gcmd.respond_info("CFS {} (slot {}) tag: {}\n  record {}".format(
+            lane.name, slot, self._tag_summary(tag), tag["record"]))
+        if gcmd.get_int("APPLY", 1, minval=0, maxval=1):
+            for cmd in self.apply_tag(lane, tag, self.afc.gcode.run_script_from_command):
+                gcmd.respond_info("  " + cmd)
+
     # -- RFID tags ---------------------------------------------------------
 
     def on_filament_insert(self, lane: AFCLane):
@@ -1218,7 +2106,7 @@ class afcCFS(afcUnit):
             return
         self._rfid_startup_queued = True
         for lane in self.lanes.values():
-            if self.material_mask & lane.slot_bits:
+            if self.material_mask & P.slot_bit(lane.index):
                 self.queue_tag_read(lane, self.rfid_startup_delay)
 
     def queue_tag_read(self, lane: AFCLane, delay: float = 0.) -> None:
@@ -1249,14 +2137,14 @@ class afcCFS(afcUnit):
         if self.bus.operation_active or self.transport.busy:
             return "box busy"
         if getattr(lane, "tool_loaded", False) or (
-                self.connected_mask is not None and self.connected_mask & lane.slot_bits):
+                self.connected_mask is not None and self.connected_mask & P.slot_bit(lane.index)):
             return "lane is loaded"
         # Untested: turning one slot while another of this box is loaded
         # (that slot is in print mode). Wait until the box is unloaded.
         if self.connected_mask or any(getattr(l, "tool_loaded", False)
                                       for l in self.lanes.values()):
             return "another slot of this box is loaded"
-        if self.material_mask is not None and not self.material_mask & lane.slot_bits:
+        if self.material_mask is not None and not self.material_mask & P.slot_bit(lane.index):
             return "slot is empty"
         return None
 
@@ -1298,7 +2186,7 @@ class afcCFS(afcUnit):
         first (SET_PRE_LOADING RUN) so the reader can see the tag.
         """
         spin = self.rfid_spin if spin is None else spin
-        bits = lane.slot_bits
+        bits = P.slot_bit(lane.index)
         record = None
         replies = []
         try:
@@ -1323,10 +2211,10 @@ class afcCFS(afcUnit):
             self._rfid_busy = False
         tag = P.decode_rfid_record(record, self.rfid_materials) if record else None
         self.lane_tags[lane.name] = tag
-        self.trace.event("rfid", lane=lane.name, slot=lane.slot_name, spin=spin,
+        self.trace.event("rfid", lane=lane.name, slot=P.slot_letter(lane.index), spin=spin,
                          replies=replies, tag=tag)
         self.logger.info("CFS {}: slot {} tag: {}".format(
-            lane.name, lane.slot_name, self._tag_summary(tag)))
+            lane.name, P.slot_letter(lane.index), self._tag_summary(tag)))
         return tag
 
     @staticmethod
@@ -1636,6 +2524,14 @@ class afcCFS(afcUnit):
             "box_status": P.status_name(self.box_status) if self.box_status is not None else None,
             "cutter_sensor": self.cutter_sensor_state if self.cutter_sensor_pin else None,
             "trace": self.trace.path if self.trace.enabled else None,
+            "lanes": {
+                lane.name: {
+                    "slot": P.slot_letter(lane.index),
+                    "present": getattr(lane, "_cfs_present_last", None),
+                    "last_load": dict(getattr(lane, "last_load_report", {}) or {}),
+                    "tag": self.lane_tags.get(lane.name),
+                } for lane in self.lanes.values()
+            },
         }
         return response
 

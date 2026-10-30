@@ -2,7 +2,7 @@
 A simulated Creality CFS box on a pseudo-terminal, for exercising AFC_CFS
 against Klipper's real reactor without hardware.
 
-It speaks the real wire format (via AFC_CFS_protocol) and models just enough
+It speaks the real wire format (the protocol helpers in AFC_CFS.py) and models just enough
 physics to drive the load/unload sequences:
 
   position  mm of filament pushed from the slot toward the toolhead
@@ -25,7 +25,7 @@ import threading
 import time
 import tty
 
-from extras import AFC_CFS_protocol as P
+from extras import AFC_CFS as P
 
 
 class FakeCFS:

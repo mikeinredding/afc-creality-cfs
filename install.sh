@@ -14,7 +14,9 @@ REPO_DIR=$(cd "$(dirname "$0")" && pwd)
 KLIPPER_DIR=""
 COPY_TEMPLATE=0
 UNINSTALL=0
-FILES="AFC_CFS.py AFC_CFS_lane.py AFC_CFS_protocol.py"
+FILES="AFC_CFS.py"
+# Files older versions linked; removed on install so Klipper doesn't load them
+OLD_FILES="AFC_CFS_lane.py AFC_CFS_protocol.py"
 
 while getopts "k:tuh" opt; do
   case "$opt" in
@@ -37,10 +39,10 @@ fi
 EXTRAS="$KLIPPER_DIR/klippy/extras"
 
 if [ "$UNINSTALL" -eq 1 ]; then
-  for f in $FILES; do
+  for f in $FILES $OLD_FILES; do
     if [ -L "$EXTRAS/$f" ]; then rm -f "$EXTRAS/$f"; echo "removed $EXTRAS/$f"; fi
   done
-  echo "Remove your [AFC_CFS] / [AFC_CFS_lane] sections, then restart Klipper."
+  echo "Remove your [AFC_CFS] sections and their [AFC_lane] lanes, then restart Klipper."
   exit 0
 fi
 
@@ -48,6 +50,14 @@ if [ ! -e "$EXTRAS/AFC.py" ]; then
   echo "AFC is not installed in $EXTRAS (AFC.py missing). Install AFC-Klipper-Add-On first." >&2
   exit 1
 fi
+
+for f in $OLD_FILES; do
+  if [ -L "$EXTRAS/$f" ]; then
+    rm -f "$EXTRAS/$f"
+    echo "removed old link $EXTRAS/$f"
+    OLD_LINKS_REMOVED=1
+  fi
+done
 
 for f in $FILES; do
   ln -sf "$REPO_DIR/extras/$f" "$EXTRAS/$f"
@@ -77,4 +87,9 @@ if [ "$COPY_TEMPLATE" -eq 1 ]; then
 fi
 
 echo
+if [ -n "$OLD_LINKS_REMOVED" ]; then
+  echo "Lanes are now plain AFC lanes: in your AFC_CFS_*.cfg files change every"
+  echo "  [AFC_CFS_lane laneN]  to  [AFC_lane laneN]"
+  echo "(the rest of each section stays the same)."
+fi
 echo "Done. Edit your CFS config (see docs/CFS.md), then restart Klipper."

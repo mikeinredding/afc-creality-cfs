@@ -1,5 +1,5 @@
 """
-Runs AFC_CFS / AFC_CFS_lane against a simulated CFS box (tests/cfs_sim.py)
+Runs the AFC_CFS unit (with plain AFC lanes) against a simulated CFS box (tests/cfs_sim.py)
 on Klipper's *real* reactor, so the serial I/O, completions, mutex and timer
 interplay are exercised for real.
 
@@ -43,9 +43,9 @@ else:
 import tests.conftest  # noqa: E402,F401  installs Klipper mocks for everything else
 from tests.conftest import MockAFC  # noqa: E402
 from tests.cfs_sim import FakeCFS  # noqa: E402
-from extras import AFC_CFS_protocol as P  # noqa: E402
+from extras import AFC_CFS as P  # noqa: E402
 from extras.AFC_CFS import afcCFS  # noqa: E402
-from extras.AFC_CFS_lane import AFCCFSLane  # noqa: E402
+from extras.AFC_lane import AFCLane  # noqa: E402
 
 FAST = {
     "stage_settle_time": 0.02,
@@ -188,11 +188,12 @@ class Rig:
         unit.on_filament_remove = MagicMock()
         unit.lane_tool_loaded = MagicMock()      # LED handling, needs a full lane
         unit.lane_tool_unloaded = MagicMock()
+        unit.gcode = MagicMock()                 # per-lane commands register here
         return unit
 
     def lane(self, index, unit=None, name=None):
         unit = unit or self.unit
-        lane = AFCCFSLane.__new__(AFCCFSLane)
+        lane = AFCLane.__new__(AFCLane)
         lane.name = name or "lane{}".format(index)
         lane.index = index
         lane.unit_obj = unit
@@ -212,7 +213,13 @@ class Rig:
         lane.runout_lane = None
         lane.spool_id = None
         lane._afc_prep_done = True
+        lane.prep = None
+        lane.load = None
+        lane.custom_load_cmd = None
+        lane.custom_unload_cmd = None
         unit.lanes[lane.name] = lane
+        unit._setup_lane(lane)           # what the unit does at connect
+        lane._cfs_present_last = None
         return lane
 
     @property
@@ -394,11 +401,11 @@ def sc_offline_prep_then_online(r):
 
 
 def _load(rig, lane):
-    lane.cmd_AFC_CFS_TOOL_LOAD(None)
+    lane.unit_obj.cmd_AFC_CFS_TOOL_LOAD(lane, None)
 
 
 def _unload(rig, lane):
-    lane.cmd_AFC_CFS_TOOL_UNLOAD(None)
+    lane.unit_obj.cmd_AFC_CFS_TOOL_UNLOAD(lane, None)
 
 
 def sc_load_unload(r):
@@ -717,9 +724,9 @@ def sc_two_boxes_load_while_polling(r):
     unit2._cfs_handle_ready()
     wait(r, 0.5)
     polls_before = box1.count(P.GET_FILAMENT_SENSOR_STATE)
-    lane5.cmd_AFC_CFS_TOOL_LOAD(None)
+    lane5.unit_obj.cmd_AFC_CFS_TOOL_LOAD(lane5, None)
     loaded = sim.toolhead_sensor
-    lane5.cmd_AFC_CFS_TOOL_UNLOAD(None)
+    lane5.unit_obj.cmd_AFC_CFS_TOOL_UNLOAD(lane5, None)
     polls_during = box1.count(P.GET_FILAMENT_SENSOR_STATE) - polls_before
     wait(r, 0.6)
     polls_after = box1.count(P.GET_FILAMENT_SENSOR_STATE) - polls_before - polls_during
@@ -750,7 +757,7 @@ def sc_stage5_reply_lost(r):
     lane = rig.lane(1)
     rig.unit.connect()
     start = r.monotonic()
-    lane.cmd_AFC_CFS_TOOL_LOAD(None)
+    lane.unit_obj.cmd_AFC_CFS_TOOL_LOAD(lane, None)
     took = r.monotonic() - start
     loaded = sim.toolhead_sensor
     sim.close()
