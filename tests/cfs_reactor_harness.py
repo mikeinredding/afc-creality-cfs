@@ -130,6 +130,7 @@ class FakeExtruder:
         self.sim = sim
         self.name = "extruder"
         self.tool_start = "pin"
+        self.fila_tool_start = None      # newer AFC checks this before tool_start_state
         self.tool_stn = 50.0
         self.tool_load_speed = 25.0
         self.estats = MagicMock()

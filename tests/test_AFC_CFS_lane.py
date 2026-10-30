@@ -103,6 +103,7 @@ def _make_lane(index=1, printing=False, tool_loaded=False, runout_lane=None):
     lane.extruder_obj.name = "extruder"
     lane.extruder_obj.tool_start = "pin"
     lane.extruder_obj.tool_start_state = False
+    lane.extruder_obj.fila_tool_start = None   # newer AFC checks this first
     lane.select_lane = MagicMock()
     lane.disable_buffer = MagicMock()
     lane.set_loaded = MagicMock()
