@@ -905,6 +905,43 @@ def sc_rfid_startup_off_by_default(r):
     return {"nothing_read": sim.preload_runs == [] and sim.count(P.GET_RFID) == 0}, {}
 
 
+def sc_rfid_load_waits_for_tag_read(r):
+    """A tool load started while a tag read is running (the box busy and
+    silent after turning an untagged slot) waits for the read to finish
+    instead of sending load commands into it."""
+    sim = FakeCFS(addressed=True, material_mask=0b0011)
+    sim.rfid_busy_delay = 1.5
+    rig = Rig(r, sim, rfid_busy_timeout=5.0, rfid_read_attempts=3, rfid_retry_interval=0.3)
+    lane1 = rig.lane(1)
+    lane2 = rig.lane(2)
+    rig.unit.connect()
+    rig.unit.read_material_mask()
+    done = {}
+
+    def reader(eventtime):
+        done["tag"] = rig.unit.read_tag(lane2)
+        done["at"] = len(sim.log)
+    r.register_callback(reader)
+    wait(r, 0.2)                       # the read has turned slot B and is waiting
+    _load(rig, lane1)
+    # The read is RUN [02 02] ... GET_RFID ... CLOSE; nothing from the load
+    # may land between the turn and the read
+    log = [(f, bytes(d)) for f, d in sim.log]
+    start = log.index((P.SET_PRE_LOADING, bytes([0x02, P.PRELOAD_RUN])))
+    # (the load also starts with a CLOSE, so look up to the read's last GET_RFID)
+    end = max(i for i, (f, d) in enumerate(log) if f == P.GET_RFID)
+    # (status polls are paused during the read, so anything else is the load's)
+    inside = [P.fn_name(f) for f, d in log[start + 1:end] if f != P.GET_RFID]
+    sim.close()
+    return {
+        "no_failures": rig.failures == [],
+        "loaded": sim.toolhead_sensor,
+        "no_load_commands_inside_the_read": inside == [],
+        "read_finished": "at" in done,
+        "box_still_online": rig.unit.online,
+    }, {"inside": inside}
+
+
 def sc_rfid_spoolman_id(r):
     """A tag with a Spoolman spool ID in its reserved field sets the lane's
     spool (AFC then takes color/material/weight from Spoolman)."""

@@ -1031,12 +1031,33 @@ class afcCFS(afcUnit):
             self.unit = unit
 
         def __enter__(self):
+            # A tag read turns a slot and can keep the box (and the shared
+            # line) busy for a minute; don't start a load/unload in the middle
+            self.unit.wait_for_tag_reads()
             self.unit._operation_depth += 1
             return self.unit
 
         def __exit__(self, *exc):
             self.unit._operation_depth -= 1
             return False
+
+    def wait_for_tag_reads(self) -> None:
+        """Block (cooperatively) while a tag read runs on any box of this chain."""
+        units = getattr(getattr(self, "bus", None), "units", None) or [self]
+        if not any(getattr(u, "_rfid_busy", False) for u in units):
+            return
+        limit = (self.rfid_busy_timeout + self.resync_timeout
+                 + self.rfid_read_attempts * (2.0 + self.rfid_retry_interval) + 10.0)
+        start = self.reactor.monotonic()
+        self.logger.info("CFS {}: waiting for an RFID tag read to finish".format(self.name))
+        self.trace.event("wait_for_tag_read")
+        while any(getattr(u, "_rfid_busy", False) for u in units):
+            if self.reactor.monotonic() - start > limit:
+                self.logger.warning("CFS {}: tag read still running after {:.0f}s; "
+                                    "continuing".format(self.name, limit))
+                break
+            self.reactor.pause(self.reactor.monotonic() + 0.2)
+        self.trace.event("tag_read_done", waited_s=round(self.reactor.monotonic() - start, 2))
 
     def operation(self):
         """Context manager that pauses background polling during a box sequence."""
@@ -1280,9 +1301,9 @@ class afcCFS(afcUnit):
         bits = lane.slot_bits
         record = None
         replies = []
-        self._rfid_busy = True
         try:
             with self.operation():
+                self._rfid_busy = True
                 if spin:
                     # Answered once the box is done; with no tag that can be
                     # about a minute

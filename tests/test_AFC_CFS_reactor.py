@@ -49,6 +49,7 @@ SCENARIOS = [
     "rfid_no_tag_box_busy",
     "rfid_box_silent_longer",
     "rfid_spoolman_id",
+    "rfid_load_waits_for_tag_read",
     "rfid_read_at_startup",
     "rfid_startup_off_by_default",
     "rfid_not_during_print",

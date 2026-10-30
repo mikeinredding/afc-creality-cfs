@@ -340,6 +340,7 @@ class AFCCFSLane(AFCLane):
         `AFC_CFS_TOOL_LOAD LANE=<lane>`
         """
         unit = self.cfs
+        unit.wait_for_tag_reads()   # a tag read keeps the box busy; finish it first
         started = self.reactor.monotonic()
         self._trace("load_start", toolhead_sensor=self._toolhead_sensor())
         self.select_lane()
@@ -534,6 +535,7 @@ class AFCCFSLane(AFCLane):
         `AFC_CFS_TOOL_UNLOAD LANE=<lane>`
         """
         unit = self.cfs
+        unit.wait_for_tag_reads()   # a tag read keeps the box busy; finish it first
         started = self.reactor.monotonic()
         self._trace("unload_start", toolhead_sensor=self._toolhead_sensor())
         self.select_lane()
@@ -598,6 +600,7 @@ class AFCCFSLane(AFCLane):
         `AFC_CFS_EJECT LANE=<lane>`
         """
         unit = self.cfs
+        unit.wait_for_tag_reads()
         if not unit.online and not unit.connect():
             raise gcmd.error("CFS {}: box is offline".format(self.name))
         ok, detail = unit.reel_back(self)
