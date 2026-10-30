@@ -434,6 +434,14 @@ A lane that already has a Spoolman spool is left alone. Nothing is read during a
 (a spool inserted mid-print is read after it ends), or while any slot of that box is
 loaded to the toolhead (untested; the read waits until the box is unloaded).
 
+AFC saves each lane's color, material and weight, so they survive a restart while
+the spool stays in its slot. For spools swapped while the printer was off, set
+`rfid_read_at_startup: True` (off by default): once Klipper has started and PREP is
+done, every slot with a spool is read once, one after another (after
+`rfid_startup_delay`, 15 s). Slots without a tag can keep the box busy for about a
+minute each, so with several untagged spools this takes a few minutes; it waits
+until no slot of the box is loaded and never runs during a print.
+
 Read one by hand: `AFC_CFS_READ_TAG LANE=lane4`. `APPLY=0` only reports the tag;
 `SPIN=0` skips turning the slot first. `AFC_CFS_STATUS` shows the last tag per lane.
 
@@ -461,6 +469,7 @@ Material codes the plugin knows: `00001` Generic PLA, `00002` Generic PLA-Silk,
 with `rfid_materials: <code>=<MATERIAL>, ...`.
 
 Options (`[AFC_CFS]`): `rfid_read` (False), `rfid_insert_delay` (10 s),
+`rfid_read_at_startup` (False), `rfid_startup_delay` (15 s),
 `rfid_spin` (True), `rfid_busy_timeout` (90 s), `rfid_read_attempts` (3),
 `rfid_retry_interval` (5 s), `rfid_materials`.
 

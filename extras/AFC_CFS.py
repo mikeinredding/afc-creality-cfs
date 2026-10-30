@@ -700,6 +700,12 @@ class afcCFS(afcUnit):
         self.rfid_busy_timeout = config.getfloat("rfid_busy_timeout", 90.0, minval=5.)
         self.rfid_read_attempts = config.getint("rfid_read_attempts", 3, minval=1)
         self.rfid_retry_interval = config.getfloat("rfid_retry_interval", 5.0, minval=0.)
+        # Also read every full slot once after Klipper starts (like stock "read
+        # RFID after Klipper starts"), for spools swapped while the printer was
+        # off. Each slot is turned; an untagged one can keep the box busy for
+        # about a minute. Off by default.
+        self.rfid_read_at_startup = config.getboolean("rfid_read_at_startup", False)
+        self.rfid_startup_delay = config.getfloat("rfid_startup_delay", 15.0, minval=0.)
         # Extra Creality material codes, "CODE=MATERIAL, ..." (e.g. 00003=PETG)
         self.rfid_materials = self._parse_materials(config.get("rfid_materials", ""))
 
@@ -745,6 +751,7 @@ class afcCFS(afcUnit):
         self._rfid_queue: Dict[str, float] = {}
         self._rfid_timer = None
         self._rfid_busy = False
+        self._rfid_startup_queued = False
 
     @staticmethod
     def _parse_materials(value: str) -> Dict[str, str]:
@@ -1066,6 +1073,7 @@ class afcCFS(afcUnit):
             if connected is not None:
                 self._mirror_connections(connected)
             self.read_buffer_state()
+            self._queue_startup_tag_reads()
         except Exception:
             self.logger.debug("CFS {}: poll failed\n{}".format(self.name, traceback.format_exc()))
         finally:
@@ -1178,6 +1186,19 @@ class afcCFS(afcUnit):
         super().on_filament_remove(lane)
         self._rfid_queue.pop(lane.name, None)
         self.lane_tags.pop(lane.name, None)
+
+    def _queue_startup_tag_reads(self) -> None:
+        """Once per Klipper start, after PREP: queue a tag read for every slot
+        with a spool (they run one at a time, never during a print)."""
+        if not self.rfid_read_at_startup or self._rfid_startup_queued:
+            return
+        if self.material_mask is None or not self.lanes or not all(
+                getattr(lane, "_afc_prep_done", False) for lane in self.lanes.values()):
+            return
+        self._rfid_startup_queued = True
+        for lane in self.lanes.values():
+            if self.material_mask & lane.slot_bits:
+                self.queue_tag_read(lane, self.rfid_startup_delay)
 
     def queue_tag_read(self, lane: AFCLane, delay: float = 0.) -> None:
         """Read this lane's tag once the box is free (never during a print)."""

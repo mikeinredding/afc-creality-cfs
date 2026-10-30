@@ -863,6 +863,48 @@ def sc_rfid_box_silent_longer(r):
     }, {}
 
 
+def sc_rfid_read_at_startup(r):
+    """rfid_read_at_startup: after PREP, every slot with a spool is read once
+    (one at a time); empty slots aren't turned, and it doesn't repeat."""
+    sim = FakeCFS(addressed=True, material_mask=0b1011)
+    sim.tags = {4: PINK_SILK}
+    rig = Rig(r, sim, rfid_read_at_startup=True, rfid_startup_delay=0.05,
+              rfid_read_attempts=1, poll_interval=0.2)
+    for i in (1, 2, 3, 4):
+        rig.lane(i)
+    rig.afc.gcode.run_script = MagicMock()
+    rig.unit.connect()
+    rig.unit._cfs_handle_ready()
+    wait(r, 2.0)
+    first = list(sim.preload_runs)
+    wait(r, 1.0)
+    cmds = [c.args[0] for c in rig.afc.gcode.run_script.call_args_list]
+    rig.unit._cfs_handle_disconnect()
+    sim.close()
+    return {
+        "full_slots_read_once": sorted(sim.preload_runs) == [0x01, 0x02, 0x08],
+        "empty_slot_not_turned": 0x04 not in sim.preload_runs,
+        "not_repeated": sim.preload_runs == first,
+        "tagged_lane_set": "SET_COLOR LANE=lane4 COLOR=E7A18E" in cmds,
+        "box_still_online": rig.unit.online,
+    }, {"preload_runs": sim.preload_runs, "cmds": cmds}
+
+
+def sc_rfid_startup_off_by_default(r):
+    """Without rfid_read_at_startup nothing is turned or read at start."""
+    sim = FakeCFS(addressed=True, material_mask=0b1111)
+    sim.tags = {4: PINK_SILK}
+    rig = Rig(r, sim, poll_interval=0.2)
+    for i in (1, 2, 3, 4):
+        rig.lane(i)
+    rig.unit.connect()
+    rig.unit._cfs_handle_ready()
+    wait(r, 1.0)
+    rig.unit._cfs_handle_disconnect()
+    sim.close()
+    return {"nothing_read": sim.preload_runs == [] and sim.count(P.GET_RFID) == 0}, {}
+
+
 def sc_rfid_spoolman_id(r):
     """A tag with a Spoolman spool ID in its reserved field sets the lane's
     spool (AFC then takes color/material/weight from Spoolman)."""
