@@ -66,7 +66,10 @@ After updating:
    (`AFC_CFS_lane.py`, `AFC_CFS_protocol.py`).
 2. In each `AFC_CFS_*.cfg`, change every `[AFC_CFS_lane laneN]` to `[AFC_lane laneN]`.
    Nothing else in the section changes (`unit: CFS_1:1`, `map:` and so on).
-3. Restart Klipper.
+3. Restart the Klipper service (`/etc/init.d/S55klipper_service restart` on a K1,
+   `sudo systemctl restart klipper` on a Pi). `FIRMWARE_RESTART` is not enough: it
+   rereads the config but keeps the old Python code loaded, and loads then fail with
+   "Homing error occurred when trying to short move to hub sensor".
 
 Without step 2 Klipper stops with "Section 'afc_cfs_lane lane1' is not a valid config
 section".

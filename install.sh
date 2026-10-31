@@ -41,6 +41,7 @@ EXTRAS="$KLIPPER_DIR/klippy/extras"
 if [ "$UNINSTALL" -eq 1 ]; then
   for f in $FILES $OLD_FILES; do
     if [ -L "$EXTRAS/$f" ]; then rm -f "$EXTRAS/$f"; echo "removed $EXTRAS/$f"; fi
+    rm -f "$EXTRAS/${f%.py}.pyc"
   done
   echo "Remove your [AFC_CFS] sections and their [AFC_lane] lanes, then restart Klipper."
   exit 0
@@ -56,6 +57,11 @@ for f in $OLD_FILES; do
     rm -f "$EXTRAS/$f"
     echo "removed old link $EXTRAS/$f"
     OLD_LINKS_REMOVED=1
+  fi
+  # A compiled copy left behind still imports without its source
+  if [ -f "$EXTRAS/${f%.py}.pyc" ]; then
+    rm -f "$EXTRAS/${f%.py}.pyc"
+    echo "removed old $EXTRAS/${f%.py}.pyc"
   fi
 done
 
@@ -92,4 +98,5 @@ if [ -n "$OLD_LINKS_REMOVED" ]; then
   echo "  [AFC_CFS_lane laneN]  to  [AFC_lane laneN]"
   echo "(the rest of each section stays the same)."
 fi
-echo "Done. Edit your CFS config (see docs/CFS.md), then restart Klipper."
+echo "Done. Edit your CFS config (see docs/CFS.md), then restart the Klipper service"
+echo "(FIRMWARE_RESTART keeps the old Python code loaded)."
