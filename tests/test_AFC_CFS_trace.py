@@ -1,4 +1,5 @@
-"""Tests for the CFS trace writer and tools/cfs_trace_summary.py."""
+"""Tests for the CFS trace writer and cfs_trace_summary.py (tools/ in the
+standalone repo, utilities/ in AFC)."""
 from __future__ import annotations
 
 import importlib.util
@@ -7,10 +8,15 @@ import json
 import os
 from unittest.mock import MagicMock
 
+import pytest
+
 from extras.AFC_CFS import CFSTrace
 
-TOOL = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "tools",
-                    "cfs_trace_summary.py")
+_ROOT = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")
+TOOL = next((p for p in (os.path.join(_ROOT, d, "cfs_trace_summary.py")
+                         for d in ("tools", "utilities")) if os.path.isfile(p)), None)
+if TOOL is None:
+    pytest.skip("cfs_trace_summary.py not found", allow_module_level=True)
 _spec = importlib.util.spec_from_file_location("cfs_trace_summary", TOOL)
 summary = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(summary)

@@ -523,8 +523,10 @@ def sc_offline(r):
 def sc_trace_recording(r):
     import importlib.util
     import tempfile
-    tool_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "tools",
-                             "cfs_trace_summary.py")
+    root = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..")
+    # tools/ in the standalone repo, utilities/ in AFC
+    tool_path = next(p for p in (os.path.join(root, d, "cfs_trace_summary.py")
+                                 for d in ("tools", "utilities")) if os.path.isfile(p))
     spec = importlib.util.spec_from_file_location("cfs_trace_summary", tool_path)
     summary = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(summary)

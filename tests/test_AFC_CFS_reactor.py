@@ -17,11 +17,13 @@ import pytest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HARNESS = os.path.join(HERE, "cfs_reactor_harness.py")
-KLIPPER_PATH = os.environ.get("KLIPPER_PATH", "")
+# KLIPPER_PATH, or a Klipper clone at the repository root (where AFC's klippy
+# integration tests expect it)
+KLIPPER_PATH = os.environ.get("KLIPPER_PATH", "") or os.path.join(HERE, "..", "klipper")
 
 pytestmark = pytest.mark.skipif(
     not os.path.isfile(os.path.join(KLIPPER_PATH, "klippy", "reactor.py")),
-    reason="KLIPPER_PATH not set to a Klipper checkout",
+    reason="no Klipper checkout (set KLIPPER_PATH or clone Klipper to ./klipper)",
 )
 
 SCENARIOS = [
@@ -61,6 +63,7 @@ SCENARIOS = [
 @pytest.mark.parametrize("scenario", SCENARIOS)
 def test_cfs_on_real_reactor(scenario):
     env = dict(os.environ)
+    env["KLIPPER_PATH"] = KLIPPER_PATH
     env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
     proc = subprocess.run([sys.executable, HARNESS, scenario], capture_output=True,
                           text=True, timeout=120, env=env)
