@@ -864,13 +864,15 @@ def sc_rfid_box_silent_longer(r):
     rig.unit.read_material_mask()
     tag = rig.unit.read_tag(lane1)
     trace_ok = rig.unit.transport._outstanding == 0
+    runs = list(sim.preload_runs)
     sim.close()
     return {
         "no_tag": tag is None,
+        "slot_turned_once": runs == [0x01],
         "late_reply_absorbed": trace_ok,
         "box_still_online": rig.unit.online,
         "consecutive_failures_reset": rig.unit._consecutive_failures == 0,
-    }, {}
+    }, {"preload_runs": runs}
 
 
 def sc_rfid_read_at_startup(r):

@@ -464,8 +464,9 @@ Read one by hand: `AFC_CFS_READ_TAG LANE=lane4`. `APPLY=0` only reports the tag;
 
 **How the read works.** Like the stock `BOX_INFO_REFRESH` macro, the slot is turned
 briefly (`SET_PRE_LOADING RUN`), then the box is asked for the tag (`GET_RFID`). On a
-slot **without** a tag the box can stay busy and silent for about a minute after the
-turn; the plugin waits for it (`rfid_busy_timeout`, 90 s) and doesn't mark the box
+slot **without** a tag the box searches, turning its slots, and stays silent for up to
+a minute and a half (93 s seen on a spool just inserted). The plugin waits for it
+(`rfid_busy_timeout`, 150 s), sends the turn only once and doesn't mark the box
 offline. Other boxes on the chain aren't polled meanwhile.
 
 **Tag format** (40 characters, community documented; checked against a real tag):
@@ -487,7 +488,7 @@ with `rfid_materials: <code>=<MATERIAL>, ...`.
 
 Options (`[AFC_CFS]`): `rfid_read` (False), `rfid_insert_delay` (10 s),
 `rfid_read_at_startup` (False), `rfid_startup_delay` (15 s),
-`rfid_spin` (True), `rfid_busy_timeout` (90 s), `rfid_read_attempts` (3),
+`rfid_spin` (True), `rfid_busy_timeout` (150 s), `rfid_read_attempts` (3),
 `rfid_retry_interval` (5 s), `rfid_materials`.
 
 If a tagged spool reads as no tag, the tag is probably on the side facing away from

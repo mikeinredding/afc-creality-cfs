@@ -1285,7 +1285,7 @@ class afcCFS(afcUnit):
         # Turn the slot first (SET_PRE_LOADING RUN), like stock BOX_INFO_REFRESH.
         # With no tag the box can stay busy for about a minute.
         self.rfid_spin = config.getboolean("rfid_spin", True)
-        self.rfid_busy_timeout = config.getfloat("rfid_busy_timeout", 90.0, minval=5.)
+        self.rfid_busy_timeout = config.getfloat("rfid_busy_timeout", 150.0, minval=5.)
         self.rfid_read_attempts = config.getint("rfid_read_attempts", 3, minval=1)
         self.rfid_retry_interval = config.getfloat("rfid_retry_interval", 5.0, minval=0.)
         # Also read every full slot once after Klipper starts (like stock "read
@@ -1653,7 +1653,7 @@ class afcCFS(afcUnit):
         return self.request(P.TIGHTEN_UP_ENABLE, bytes([0x01 if enable else 0x00]))
 
     def pre_loading(self, action: int, slot_bits: int = P.SLOT_ALL,
-                    timeout: Optional[float] = None) -> Optional[Frame]:
+                    timeout: Optional[float] = None, retries: int = 1) -> Optional[Frame]:
         """
         SET_PRE_LOADING for slots. RUN and TIGHT move the slot motor and are only answered when they
         finish.
@@ -1661,12 +1661,13 @@ class afcCFS(afcUnit):
         :param action: PRELOAD_CLOSE, OPEN, RUN or TIGHT
         :param slot_bits: slots, default all
         :param timeout: seconds to wait, default by action
+        :param retries: extra attempts after a timeout
         :return Optional[Frame]: the reply, or None
         """
         motor = action in (P.PRELOAD_RUN, P.PRELOAD_TIGHT)
         return self.request(P.SET_PRE_LOADING, bytes([slot_bits, action]),
                             timeout=timeout or (self.stage_timeout if motor else None),
-                            motor=motor)
+                            retries=retries, motor=motor)
 
     def extrude_stage(self, slot_bits: int, stage: int, arg: int = 0x00,
                       timeout: Optional[float] = None) -> Optional[Frame]:
@@ -2793,8 +2794,10 @@ class afcCFS(afcUnit):
                 self._rfid_busy = True
                 if spin:
                     # Answered once the box is done; with no tag that can be
-                    # about a minute
-                    self.pre_loading(P.PRELOAD_RUN, bits, timeout=self.rfid_busy_timeout)
+                    # over 90 s. Never resent: a timeout means slow, not lost,
+                    # and a second RUN makes the box search all over again.
+                    self.pre_loading(P.PRELOAD_RUN, bits, timeout=self.rfid_busy_timeout,
+                                     retries=0)
                 for attempt in range(self.rfid_read_attempts):
                     reply = self.request(P.GET_RFID, bytes([bits]), timeout=2.0)
                     if reply is not None:
