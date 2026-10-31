@@ -207,8 +207,6 @@ class Rig:
         lane.set_loaded = MagicMock()
         lane.set_unloaded = MagicMock()
         lane.loaded_to_hub = False
-        lane.last_load_report = {}
-        lane._cfs_present_last = None
         lane.status = None
         lane.tool_loaded = False
         lane.runout_lane = None
@@ -220,7 +218,7 @@ class Rig:
         lane.custom_unload_cmd = None
         unit.lanes[lane.name] = lane
         unit._setup_lane(lane)           # what the unit does at connect
-        lane._cfs_present_last = None
+        lane.unit_obj.present_last[lane.name] = None
         return lane
 
     @property
@@ -308,10 +306,10 @@ def sc_poll_presence(r):
     lanes = [rig.lane(i) for i in (1, 2, 3)]
     rig.unit._cfs_handle_ready()
     wait(r, 0.6)
-    initial = [l._cfs_present_last for l in lanes]
+    initial = [l.unit_obj.present_last[l.name] for l in lanes]
     sim.material_mask = 0b0110
     wait(r, 0.6)
-    after = [l._cfs_present_last for l in lanes]
+    after = [l.unit_obj.present_last[l.name] for l in lanes]
     rig.unit._cfs_handle_disconnect()
     heartbeats = sim.count(P.CMD_ONLINE_CHECK)
     sim.close()
@@ -393,12 +391,13 @@ def sc_offline_prep_then_online(r):
     return {
         "prep_saw_offline": results == [False, False, False],
         "came_online": rig.unit.online,
-        "presence_synced": [l._cfs_present_last for l in lanes] == [True, True, False],
+        "presence_synced": ([l.unit_obj.present_last[l.name] for l in lanes]
+                            == [True, True, False]),
         "no_insert_event": not rig.unit.on_filament_insert.called,
         "tool_loaded_kept": lanes[0].tool_loaded and not lanes[0].set_unloaded.called,
         "tool_led_set": rig.unit.lane_tool_loaded_idle.called,
     }, {"results": results, "online": rig.unit.online,
-        "presence": [l._cfs_present_last for l in lanes]}
+        "presence": [l.unit_obj.present_last[l.name] for l in lanes]}
 
 
 def _load(rig, lane):
@@ -454,7 +453,8 @@ def sc_load_unload(r):
         "reactor_never_stalled": dog.never_stalled,
     }, {"max_gap_ms": round(dog.max_gap * 1000, 2), "stages": stages,
         "position_after_load": after_load_position, "failures": rig.failures,
-        "report": lane.last_load_report, "tool_state_warnings": tool_state_warnings,
+        "report": lane.unit_obj.load_reports[lane.name],
+        "tool_state_warnings": tool_state_warnings,
         "lane_loaded": getattr(rig.extruder, "lane_loaded", None)}
 
 

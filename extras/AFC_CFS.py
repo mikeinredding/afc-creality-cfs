@@ -28,7 +28,8 @@ import termios
 import threading
 import time
 import traceback
-from typing import TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple, Optional
+from typing import (TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple, Optional, Set,
+                    Tuple)
 
 import configfile
 
@@ -351,7 +352,7 @@ def decode_float_be(data: bytes) -> Optional[float]:
     """
     if len(data) < 4:
         return None
-    return struct.unpack(">f", bytes(data[:4]))[0]
+    return float(struct.unpack(">f", bytes(data[:4]))[0])
 
 
 def slot_bit(index: int) -> int:
@@ -582,11 +583,12 @@ class CFSTrace:
 
         :return Any: the open file
         """
-        directory = os.path.dirname(self.path)
+        path = self.path or ""
+        directory = os.path.dirname(path)
         if directory:
             os.makedirs(directory, exist_ok=True)
-        handle = open(self.path, "a", encoding="utf-8")
-        self._size = os.path.getsize(self.path)
+        handle = open(path, "a", encoding="utf-8")
+        self._size = os.path.getsize(path)
         return handle
 
     def _rotate(self, handle: Any) -> Any:
@@ -597,14 +599,15 @@ class CFSTrace:
         :return Any: the new open file
         """
         handle.close()
+        path = self.path or ""
         for i in range(self.backups, 0, -1):
-            src = self.path if i == 1 else f"{self.path}.{i - 1}"
-            dst = f"{self.path}.{i}"
+            src = path if i == 1 else f"{path}.{i - 1}"
+            dst = f"{path}.{i}"
             if os.path.exists(src):
                 os.replace(src, dst)
         if (self.backups == 0
-            and os.path.exists(self.path)):
-            os.remove(self.path)
+            and os.path.exists(path)):
+            os.remove(path)
         return self._open()
 
     def _run(self) -> None:
@@ -871,7 +874,7 @@ class CFSTransport:
     def request(self, addr: int, fn: int, data: bytes = b"",
                 status: int = P.REQ_STATUS_NORMAL, timeout: float = 1.0,
                 retries: int = 1, motor: bool = False,
-                quiet: bool = False) -> Optional[P.Frame]:
+                quiet: bool = False) -> Optional[Frame]:
         """
         Send one request and wait (cooperatively) for the matching reply.
 
@@ -917,7 +920,7 @@ class CFSTransport:
                 if not quiet:
                     self._trace("tx", fn=P.fn_name(fn), addr=addr, data=bytes(data).hex(),
                                 attempt=attempt + 1)
-                result = completion.wait(self.reactor.monotonic() + timeout)
+                result: Optional[Frame] = completion.wait(self.reactor.monotonic() + timeout)
                 self._pending = None
                 if result is not None:
                     return result
@@ -957,7 +960,7 @@ class CFSTransport:
 
         :return bool: True if busy
         """
-        return self._mutex.test()
+        return bool(self._mutex.test())
 
 
 class CFSBus:
@@ -1062,17 +1065,17 @@ class CFSBus:
                 return unit
         return None
 
-    def discover(self, timeout: float = 1.5) -> List[tuple]:
+    def discover(self, timeout: float = 1.5) -> List[Tuple[Any, ...]]:
         """
         Address every unaddressed box on the chain. Each GET_SLAVE_INFO
         broadcast is answered by one unaddressed box; giving it an address
         silences it, so repeat until nobody answers.
 
         :param timeout: seconds to wait for each broadcast
-        :return List[tuple]: (uid, address) for each box addressed
+        :return List[Tuple[Any, ...]]: (uid, address) for each box addressed
         """
-        assigned: List[tuple] = []
-        taken = set()
+        assigned: List[Tuple[Any, ...]] = []
+        taken: Set[Any] = set()
         for _ in range(4):
             reply = self.transport.request(P.BROADCAST_BOXES, P.CMD_GET_SLAVE_INFO,
                                            bytes([P.BROADCAST_BOXES, P.BROADCAST_BOXES]),
@@ -1335,7 +1338,10 @@ class afcCFS(afcUnit):
         self._operation_depth = 0
         self._quiet_requests = False
         self._poll_timer = None
-        self._lane_commands = set()      # lanes whose AFC_CFS_* commands are registered
+        self._lane_commands: Set[str] = set()  # lanes whose AFC_CFS_* commands are registered
+        # Per lane: last slot presence seen (None = unknown) and the last load report
+        self.present_last: Dict[str, Optional[bool]] = {}
+        self.load_reports: Dict[str, Dict[str, Any]] = {}
         # RFID: last tag read per lane, lanes waiting for a read, read in progress
         self.lane_tags: Dict[str, Optional[Dict[str, Any]]] = {}
         self._rfid_queue: Dict[str, float] = {}
@@ -1369,12 +1375,12 @@ class afcCFS(afcUnit):
         return table
 
     @staticmethod
-    def _parse_steps(value: str) -> List[tuple]:
+    def _parse_steps(value: str) -> List[Tuple[Any, ...]]:
         """
         Parse unload_retract_steps.
 
         :param value: 'distance:speed, ...' in mm and mm/min
-        :return List[tuple]: (distance, speed) pairs
+        :return List[Tuple[Any, ...]]: (distance, speed) pairs
         """
         steps = []
         for item in value.split(","):
@@ -1452,7 +1458,7 @@ class afcCFS(afcUnit):
                 "unload_retract_steps", "unload_tip_wiggle", "unload_timeout")
         return {k: getattr(self, k, None) for k in keys}
 
-    def heartbeat(self) -> Optional[P.Frame]:
+    def heartbeat(self) -> Optional[Frame]:
         """
         The stock host's periodic CMD_ONLINE_CHECK, which keeps the box's
         connection light happy.
@@ -1480,7 +1486,8 @@ class afcCFS(afcUnit):
         if stats is None:
             return False
         try:
-            return stats.get_status(self.reactor.monotonic()).get("state") == "printing"
+            state = stats.get_status(self.reactor.monotonic()).get("state")
+            return bool(state == "printing")
         except Exception:
             return False
 
@@ -1543,7 +1550,7 @@ class afcCFS(afcUnit):
                 return False
         return self._set_online()
 
-    def _probe(self) -> Optional[P.Frame]:
+    def _probe(self) -> Optional[Frame]:
         """
         Check whether the box answers at its address.
 
@@ -1589,7 +1596,7 @@ class afcCFS(afcUnit):
     # Box requests (used by lanes)
 
     def request(self, fn: int, data: bytes = b"", timeout: Optional[float] = None,
-                retries: int = 1, motor: bool = False) -> Optional[P.Frame]:
+                retries: int = 1, motor: bool = False) -> Optional[Frame]:
         """
         Send one request to this box and track whether it is online.
 
@@ -1617,7 +1624,7 @@ class afcCFS(afcUnit):
                 self._set_online()
         return reply
 
-    def set_box_mode(self, mode: int, slot_bits: int = 0x00) -> Optional[P.Frame]:
+    def set_box_mode(self, mode: int, slot_bits: int = 0x00) -> Optional[Frame]:
         """
         SET_BOX_MODE: idle/feed mode, or print mode for a slot.
 
@@ -1627,7 +1634,7 @@ class afcCFS(afcUnit):
         """
         return self.request(P.SET_BOX_MODE, bytes([slot_bits, mode]))
 
-    def connection_motor(self, action: int) -> Optional[P.Frame]:
+    def connection_motor(self, action: int) -> Optional[Frame]:
         """
         Run or stop the connection motor (the merge).
 
@@ -1636,7 +1643,7 @@ class afcCFS(afcUnit):
         """
         return self.request(P.CTRL_CONNECTION_MOTOR_ACTION, bytes([action]))
 
-    def tighten_up(self, enable: bool) -> Optional[P.Frame]:
+    def tighten_up(self, enable: bool) -> Optional[Frame]:
         """
         Switch the box's tightening on or off.
 
@@ -1646,7 +1653,7 @@ class afcCFS(afcUnit):
         return self.request(P.TIGHTEN_UP_ENABLE, bytes([0x01 if enable else 0x00]))
 
     def pre_loading(self, action: int, slot_bits: int = P.SLOT_ALL,
-                    timeout: Optional[float] = None) -> Optional[P.Frame]:
+                    timeout: Optional[float] = None) -> Optional[Frame]:
         """
         SET_PRE_LOADING for slots. RUN and TIGHT move the slot motor and are only answered when they
         finish.
@@ -1662,7 +1669,7 @@ class afcCFS(afcUnit):
                             motor=motor)
 
     def extrude_stage(self, slot_bits: int, stage: int, arg: int = 0x00,
-                      timeout: Optional[float] = None) -> Optional[P.Frame]:
+                      timeout: Optional[float] = None) -> Optional[Frame]:
         """
         Motor command: the box answers once the stage's motion finishes.
         Stage 5 is the exception: a status poll answered at once while the
@@ -1681,7 +1688,7 @@ class afcCFS(afcUnit):
                             timeout=timeout or self.stage_timeout, retries=0, motor=True)
 
     def retrude_stage(self, slot_bits: int, stage: int,
-                      timeout: Optional[float] = None) -> Optional[P.Frame]:
+                      timeout: Optional[float] = None) -> Optional[Frame]:
         """
         Motor command; slot_bits 0 is the generic check-in used during unload.
 
@@ -1742,7 +1749,7 @@ class afcCFS(afcUnit):
         """
         reply = self.request(P.GET_MEASURING_WHEEL, bytes([0x01]))
         if reply is not None:
-            return P.decode_float_be(reply.data)
+            return decode_float_be(reply.data)
         return None
 
     def read_box_status(self) -> Optional[int]:
@@ -1785,15 +1792,13 @@ class afcCFS(afcUnit):
             self.unit._operation_depth += 1
             return self.unit
 
-        def __exit__(self, *exc: Any) -> bool:
+        def __exit__(self, *exc: Any) -> None:
             """
-            Resume polling.
+            Resume polling. Exceptions propagate.
 
             :param exc: exception info, if any
-            :return bool: False, so exceptions propagate
             """
             self.unit._operation_depth -= 1
-            return False
 
     def wait_for_tag_reads(self) -> None:
         """
@@ -1925,13 +1930,13 @@ class afcCFS(afcUnit):
         if not self.online:
             # Unknown, not empty: the first poll after the box answers syncs
             # this lane quietly instead of treating it as a new spool.
-            cur_lane._cfs_present_last = None
+            self.present_last[cur_lane.name] = None
             msg = "<span class=error--text>CFS NOT RESPONDING</span>"
             self.lane_not_ready(cur_lane)
         else:
             present = bool(self.material_mask is not None
                            and self.material_mask & P.slot_bit(cur_lane.index))
-            cur_lane._cfs_present_last = present
+            self.present_last[cur_lane.name] = present
             msg = self.apply_lane_state(cur_lane, present)
 
         if assignTcmd:
@@ -2031,8 +2036,8 @@ class afcCFS(afcUnit):
         # No load switch: AFC defaults _load_state to True; the box's
         # connection sensor drives it instead (see set_lane_sensors)
         lane._load_state = False
-        lane._cfs_present_last = None
-        lane.last_load_report = {}
+        self.present_last[lane.name] = None
+        self.load_reports[lane.name] = {}
         if getattr(lane, "custom_load_cmd", None) is None:
             lane.custom_load_cmd = f"AFC_CFS_TOOL_LOAD LANE={lane.name}"
         if getattr(lane, "custom_unload_cmd", None) is None:
@@ -2128,10 +2133,10 @@ class afcCFS(afcUnit):
         :param lane: lane to act on
         :param present: a spool is in the slot
         """
-        if present == getattr(lane, "_cfs_present_last", None):
+        if present == self.present_last.get(lane.name):
             return
-        previous = getattr(lane, "_cfs_present_last", None)
-        lane._cfs_present_last = present
+        previous = self.present_last.get(lane.name)
+        self.present_last[lane.name] = present
         lane.prep_state = present
         lane.loaded_to_hub = present
         slot = P.slot_letter(lane.index)
@@ -2177,7 +2182,7 @@ class afcCFS(afcUnit):
 
     # Tool load
 
-    def _stage5_feed(self, lane: AFCLane) -> tuple:
+    def _stage5_feed(self, lane: AFCLane) -> Tuple[Any, ...]:
         """
         Poll EXTRUDE_PROCESS stage 5 (the box motor runs while we poll) until
         the toolhead sensor trips. Stops early on timeout or when the measuring
@@ -2214,8 +2219,8 @@ class afcCFS(afcUnit):
                     if self._toolhead_sensor(lane):
                         continue
                     return False, f"measuring wheel stalled at {wheel:.1f}mm"
-            lane.last_load_report["stage5_polls"] = polls
-            lane.last_load_report["wheel"] = wheel
+            self.load_reports[lane.name]["stage5_polls"] = polls
+            self.load_reports[lane.name]["wheel"] = wheel
             self._pause(self.stage5_poll_interval)
 
     def _box_cleanup(self) -> None:
@@ -2226,7 +2231,7 @@ class afcCFS(afcUnit):
         self.connection_motor(P.CONN_STOP)
         self.clear_latched_error()
 
-    def _load_attempt(self, lane: AFCLane, attempt: int) -> tuple:
+    def _load_attempt(self, lane: AFCLane, attempt: int) -> Tuple[Any, ...]:
         """
         One try of the stock load sequence, up to setting the slot to print mode.
 
@@ -2265,8 +2270,8 @@ class afcCFS(afcUnit):
         stage5_start = self.reactor.monotonic()
         reached, detail = self._stage5_feed(lane)
         self._lane_trace(lane, "stage5_result", reached=reached, detail=detail, attempt=attempt + 1,
-                         polls=lane.last_load_report.get("stage5_polls"),
-                         wheel=lane.last_load_report.get("wheel"),
+                         polls=self.load_reports[lane.name].get("stage5_polls"),
+                         wheel=self.load_reports[lane.name].get("wheel"),
                          seconds=round(self.reactor.monotonic() - stage5_start, 2))
         self.logger.info(f"CFS {lane.name}: stage 5 {detail}")
         if not reached:
@@ -2283,18 +2288,18 @@ class afcCFS(afcUnit):
         if self.prime1_length > 0:
             self._e_move(self.prime1_length, self.prime1_speed, "prime 1")
         reply = self.extrude_stage(bits, 0x06)
-        lane.last_load_report["stage6"] = P.status_name(reply.status if reply else None)
+        self.load_reports[lane.name]["stage6"] = P.status_name(reply.status if reply else None)
         if self.prime2_length > 0:
             self._e_move(self.prime2_length, self.prime2_speed, "prime 2")
         reply = self.extrude_stage(bits, 0x07, self.stage7_arg)
-        lane.last_load_report["stage7"] = P.status_name(reply.status if reply else None)
+        self.load_reports[lane.name]["stage7"] = P.status_name(reply.status if reply else None)
         if (reply is None
             or not reply.ok):
-            stage7 = lane.last_load_report["stage7"]
+            stage7 = self.load_reports[lane.name]["stage7"]
             self.logger.warning(f"CFS {lane.name}: stage 7 returned {stage7}")
         self._lane_trace(lane, "handoff", attempt=attempt + 1,
-                         stage6=lane.last_load_report["stage6"],
-                         stage7=lane.last_load_report["stage7"], stage7_arg=self.stage7_arg,
+                         stage6=self.load_reports[lane.name]["stage6"],
+                         stage7=self.load_reports[lane.name]["stage7"], stage7_arg=self.stage7_arg,
                          toolhead_sensor=self._toolhead_sensor(lane))
 
         # Mark this slot as the active PRINT slot: the box then runs its own
@@ -2325,7 +2330,7 @@ class afcCFS(afcUnit):
         self._lane_trace(lane, "load_start", toolhead_sensor=self._toolhead_sensor(lane))
         lane.select_lane()
         self.afc._check_extruder_temp(lane)
-        lane.last_load_report = {"slot": slot}
+        self.load_reports[lane.name] = {"slot": slot}
 
         if (not self.online
             and not self.connect()):
@@ -2373,7 +2378,7 @@ class afcCFS(afcUnit):
             else:
                 ok = False
 
-        lane.last_load_report["result"] = detail
+        self.load_reports[lane.name]["result"] = detail
         if not ok:
             self._lane_trace(lane, "load_end", ok=False, detail=detail, attempts=attempts_used,
                              seconds=round(self.reactor.monotonic() - started, 2))
@@ -2454,10 +2459,10 @@ class afcCFS(afcUnit):
         if self.afc.form_tip:
             if self.afc.form_tip_cmd == "AFC":
                 self.printer.lookup_object("AFC_form_tip").tip_form()
-            else:
+            elif self.afc.form_tip_cmd:
                 self.afc.gcode.run_script_from_command(self.afc.form_tip_cmd)
 
-    def _retract_to_box(self, lane: AFCLane) -> tuple:
+    def _retract_to_box(self, lane: AFCLane) -> Tuple[Any, ...]:
         """
         After the cut, stock order (Hi captures, confirmed on a K1):
           1. RETRUDE stage 0 (START) while the extruder gears still hold the
@@ -2917,7 +2922,7 @@ class afcCFS(afcUnit):
         log = self.logger.info if ok else self.logger.error
         log(f"CFS {self.name}: eject {lane.name}: {detail}")
 
-    def reel_back(self, lane: AFCLane) -> tuple:
+    def reel_back(self, lane: AFCLane) -> Tuple[Any, ...]:
         """
         Reel a slot's filament back into the box with the box motors only.
         Only valid while the filament is short of the extruder gears (e.g.
@@ -2946,7 +2951,7 @@ class afcCFS(afcUnit):
         self.trace.event("eject_end", lane=lane.name, ok=ok, detail=detail, seconds=seconds)
         return ok, detail
 
-    def reel_slot(self, bits: int) -> tuple:
+    def reel_slot(self, bits: int) -> Tuple[Any, ...]:
         """
         Reel a slot back into the box: pre-loading off, box idle, then
         RETRUDE_PROCESS stage 0 and stage 1. The caller holds operation().
@@ -2976,7 +2981,7 @@ class afcCFS(afcUnit):
 
     def move_to_hub(self, lane: AFCLane, dist: float, dir: MoveDirection,
                     use_homing: bool = True, speed_mode: Optional[SpeedMode] = None,
-                    assist_active: Optional[AssistActive] = None) -> tuple:
+                    assist_active: Optional[AssistActive] = None) -> Tuple[Any, ...]:
         """
         Not used: the box feeds its own filament.
 
@@ -2992,7 +2997,7 @@ class afcCFS(afcUnit):
         return False, 0, AFCMoveWarning.ERROR
 
     def load_then_home(self, lane: AFCLane, distance: float, assist_active: AssistActive,
-                       endstop: AFCHomingPoints) -> tuple:
+                       endstop: AFCHomingPoints) -> Tuple[Any, ...]:
         """
         Not used: the box feeds its own filament.
 
@@ -3005,7 +3010,7 @@ class afcCFS(afcUnit):
         self.logger.debug(f"CFS {self.name}: load_then_home not supported, box handles feeding")
         return False, 0, AFCMoveWarning.ERROR
 
-    def calibrate_lane(self, cur_lane: AFCLane, tol: float) -> tuple:
+    def calibrate_lane(self, cur_lane: AFCLane, tol: float) -> Tuple[Any, ...]:
         """
         CFS lanes have nothing to calibrate.
 
@@ -3015,7 +3020,7 @@ class afcCFS(afcUnit):
         """
         return False, self.CALIBRATION_UNSUPPORTED, 0.0
 
-    def calibrate_bowden(self, cur_lane: AFCLane, dis: float, tol: float) -> tuple:
+    def calibrate_bowden(self, cur_lane: AFCLane, dis: float, tol: float) -> Tuple[Any, ...]:
         """
         CFS lanes have nothing to calibrate.
 
@@ -3026,7 +3031,7 @@ class afcCFS(afcUnit):
         """
         return False, self.CALIBRATION_UNSUPPORTED, 0.0
 
-    def calibrate_td1(self, cur_lane: AFCLane, dis: float, tol: float) -> tuple:
+    def calibrate_td1(self, cur_lane: AFCLane, dis: float, tol: float) -> Tuple[Any, ...]:
         """
         CFS lanes have nothing to calibrate.
 
@@ -3285,7 +3290,7 @@ class afcCFS(afcUnit):
         :param eventtime: reactor time
         :return Dict[str, Any]: status
         """
-        response = super().get_status(eventtime)
+        response: Dict[str, Any] = super().get_status(eventtime)
         response["cfs"] = {
             "online": self.online,
             "box_addr": self.box_addr,
@@ -3299,8 +3304,8 @@ class afcCFS(afcUnit):
             "lanes": {
                 lane.name: {
                     "slot": P.slot_letter(lane.index),
-                    "present": getattr(lane, "_cfs_present_last", None),
-                    "last_load": dict(getattr(lane, "last_load_report", {}) or {}),
+                    "present": self.present_last.get(lane.name),
+                    "last_load": dict(self.load_reports.get(lane.name, {})),
                     "tag": self.lane_tags.get(lane.name),
                 } for lane in self.lanes.values()
             },

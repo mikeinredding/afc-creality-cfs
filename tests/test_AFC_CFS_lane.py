@@ -70,6 +70,8 @@ def _make_unit(afc):
     unit._rfid_busy = False
     unit.lane_tags = {}
     unit._lane_commands = set()
+    unit.present_last = {}
+    unit.load_reports = {}
     for name in BOX_IO:
         setattr(unit, name, MagicMock())
     unit.read_material_mask = MagicMock(return_value=0b1111)
@@ -111,11 +113,11 @@ def _make_lane(index=1, printing=False, tool_loaded=False, runout_lane=None):
     lane._perform_pause_runout = MagicMock()
     lane._perform_infinite_runout = MagicMock()
     lane._afc_prep_done = True
-    lane._cfs_present_last = True
+    unit.present_last[lane.name] = True
     lane.status = AFCLaneState.LOADED
     lane.tool_loaded = tool_loaded
     lane.runout_lane = runout_lane
-    lane.last_load_report = {}
+    unit.load_reports[lane.name] = {}
     unit.lanes[lane.name] = lane
     return lane
 
@@ -123,7 +125,7 @@ def _make_lane(index=1, printing=False, tool_loaded=False, runout_lane=None):
 class TestPresence:
     def test_first_report_only_mirrors_state(self):
         lane = _make_lane()
-        lane._cfs_present_last = None
+        lane.unit_obj.present_last[lane.name] = None
         lane.unit_obj.update_lane_presence(lane, True)
         assert lane.prep_state is True and lane.loaded_to_hub is True
         lane.set_loaded.assert_not_called()
@@ -135,7 +137,7 @@ class TestPresence:
 
     def test_insert_marks_lane_loaded(self):
         lane = _make_lane()
-        lane._cfs_present_last = False
+        lane.unit_obj.present_last[lane.name] = False
         lane.status = AFCLaneState.NONE
         lane.unit_obj.update_lane_presence(lane, True)
         lane.set_loaded.assert_called_once()
@@ -299,6 +301,8 @@ class TestSystemTest:
         unit.lane_tool_loaded_idle = MagicMock()
         unit.boot_wait = 0.0
         unit._boot_wait_done = False
+        unit.present_last = {}
+        unit.load_reports = {}
         unit.reactor = AdvancingReactor()
         return unit
 
@@ -372,7 +376,7 @@ class TestSystemTest:
         assert "NOT RESPONDING" in unit.logger.info.call_args.args[0]
         lane.set_afc_prep_done.assert_called_once()
         # Unknown rather than empty, so the first poll doesn't see an insert
-        assert lane._cfs_present_last is None
+        assert unit.present_last[lane.name] is None
 
     def test_waits_for_booting_box_once(self):
         unit = self._unit(online=False)
@@ -405,17 +409,17 @@ class TestSystemTest:
 class TestFirstReadingAfterOfflinePrep:
     def test_first_reading_is_not_an_insert(self):
         lane = _make_lane(tool_loaded=True)
-        lane._cfs_present_last = None
+        lane.unit_obj.present_last[lane.name] = None
         lane.unit_obj.apply_lane_state = MagicMock(return_value="FILAMENT PRESENT in ToolHead")
         lane.unit_obj.update_lane_presence(lane, True)
         lane.unit_obj.apply_lane_state.assert_called_once_with(lane, True)
         lane.unit_obj.on_filament_insert.assert_not_called()
         lane.set_loaded.assert_not_called()
-        assert lane._cfs_present_last is True
+        assert lane.unit_obj.present_last[lane.name] is True
 
     def test_first_reading_empty_is_not_a_runout(self):
         lane = _make_lane(printing=True, tool_loaded=False)
-        lane._cfs_present_last = None
+        lane.unit_obj.present_last[lane.name] = None
         lane.unit_obj.apply_lane_state = MagicMock(return_value="EMPTY READY FOR SPOOL")
         lane.unit_obj.update_lane_presence(lane, False)
         lane.unit_obj.on_filament_remove.assert_not_called()
@@ -517,7 +521,8 @@ class TestLaneSetup:
         assert lane.custom_load_cmd == "AFC_CFS_TOOL_LOAD LANE=lane2"
         assert lane.custom_unload_cmd == "AFC_CFS_TOOL_UNLOAD LANE=lane2"
         assert lane._load_state is False          # the box's connection sensor drives it
-        assert lane._cfs_present_last is None and lane.last_load_report == {}
+        assert unit.present_last[lane.name] is None
+        assert unit.load_reports[lane.name] == {}
         registered = {c.args[0] for c in unit.gcode.register_mux_command.call_args_list
                       if c.args[2] == "lane2"}
         assert registered == {"AFC_CFS_TOOL_LOAD", "AFC_CFS_TOOL_UNLOAD",
