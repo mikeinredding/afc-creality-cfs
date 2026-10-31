@@ -234,6 +234,14 @@ def wait(r, seconds):
     r.pause(r.monotonic() + seconds)
 
 
+def wait_until(r, cond, timeout=5.0, step=0.05):
+    """Run the reactor until cond() is true or timeout passes; cond()'s last value."""
+    end = r.monotonic() + timeout
+    while not cond() and r.monotonic() < end:
+        r.pause(r.monotonic() + step)
+    return cond()
+
+
 def is_subsequence(needle, haystack):
     it = iter(haystack)
     return all(any(x == y for y in it) for x in needle)
@@ -304,14 +312,23 @@ def sc_poll_presence(r):
     sim = FakeCFS(material_mask=0b0011)
     rig = Rig(r, sim)
     lanes = [rig.lane(i) for i in (1, 2, 3)]
+    def presence():
+        return [l.unit_obj.present_last[l.name] for l in lanes]
+
+    # Wait for the readings instead of a fixed time, so a slow test machine
+    # doesn't fail the check
+    start = r.monotonic()
     rig.unit._cfs_handle_ready()
-    wait(r, 0.6)
-    initial = [l.unit_obj.present_last[l.name] for l in lanes]
+    wait_until(r, lambda: presence() == [True, True, False])
+    initial = presence()
     sim.material_mask = 0b0110
-    wait(r, 0.6)
-    after = [l.unit_obj.present_last[l.name] for l in lanes]
+    wait_until(r, lambda: presence() == [False, True, True])
+    wait(r, 0.3)                     # let the insert/removal handlers finish
+    after = presence()
+    elapsed = r.monotonic() - start
     rig.unit._cfs_handle_disconnect()
     heartbeats = sim.count(P.CMD_ONLINE_CHECK)
+    polls = sim.count(P.GET_FILAMENT_SENSOR_STATE)
     sim.close()
     return {
         "initial_presence": initial == [True, True, False],
@@ -319,9 +336,11 @@ def sc_poll_presence(r):
         "insert_marks_loaded": lanes[2].set_loaded.called,
         "insert_event_sent": rig.unit.on_filament_insert.called,
         "removal_marks_unloaded": lanes[0].set_unloaded.called,
-        # 1.2s of polling at the default 1.5s heartbeat: at least one, not every poll
-        "heartbeat_sent": 1 <= heartbeats <= 2,
-    }, {"initial": initial, "after": after, "heartbeats": heartbeats}
+        # The connect check, then one heartbeat per 1.5 s (the default), not one per poll
+        "heartbeat_sent": 1 <= heartbeats <= elapsed / 1.5 + 2,
+        "heartbeat_not_every_poll": heartbeats < polls,
+    }, {"initial": initial, "after": after, "heartbeats": heartbeats, "polls": polls,
+        "seconds": round(elapsed, 2)}
 
 
 def _prep_lane(rig, lane):
