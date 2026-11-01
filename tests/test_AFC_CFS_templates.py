@@ -7,9 +7,12 @@ import pathlib
 import jinja2
 import pytest
 
-TEMPLATES = sorted((pathlib.Path(__file__).resolve().parent.parent / "templates").glob("*.cfg"))
+# Only the CFS templates: inside AFC's repo the folder also holds every other unit's
+TEMPLATES = sorted((pathlib.Path(__file__).resolve().parent.parent / "templates")
+                   .glob("AFC_CFS_*.cfg"))
 if not TEMPLATES:  # tests run from inside the AFC checkout; find the repo copy via the symlink
-    TEMPLATES = sorted(pathlib.Path(__file__).resolve().parent.parent.parent.glob("templates/*.cfg"))
+    TEMPLATES = sorted(pathlib.Path(__file__).resolve().parent.parent.parent
+                       .glob("templates/AFC_CFS_*.cfg"))
 
 
 def _macros():
@@ -30,4 +33,6 @@ def test_macro_compiles(gcode):
 
 
 def test_found_templates():
-    assert len(list(_macros())) >= 5
+    # AFC_CFS_wipe.cfg is optional; the leave-purge macro the load needs is in AFC_CFS_1.cfg
+    ids = [p.id for p in _macros()]
+    assert "AFC_CFS_1.cfg:gcode_macro AFC_CFS_LEAVE_PURGE" in ids
