@@ -114,10 +114,10 @@ watchdog that fails the test if anything blocks the reactor.
 
 - **The slot's light flashes red during a load.** When the filament reaches the
   toolhead, the loading slot's light flashes red for a few seconds, then goes
-  back to pulsing white. The load itself completes normally. It's probably the box
-  showing a status it holds during the hand-off to the extruder (the prime
-  moves before print mode is set) rather than a real error; not yet confirmed
-  against stock firmware.
+  back to pulsing white. The load itself completes normally. Stock firmware
+  doesn't do this. The likely cause is the error the box latches after a feed
+  (`EXTRUDE_ERR8`, shown red), which stock clears during its hand-off and this
+  plugin only clears when it sets print mode; not yet confirmed.
 
 ## Credits
 

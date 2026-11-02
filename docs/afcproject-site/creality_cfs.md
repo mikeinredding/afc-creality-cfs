@@ -53,7 +53,8 @@ Tested on a K1 with one box and a K1 Max with two boxes, both on Simple AF.
   of stopping with "Please home printer before doing a tool load".
 - The box's lights: a pulsing white slot is the one loaded to the toolhead. During a load,
   the loading slot flashes red for a few seconds once the filament reaches the toolhead, then
-  goes back to white; this is the box's hand-off to the extruder, not an error. Chasing red means
+  goes back to white. Stock firmware doesn't do this; the load still completes normally.
+  Chasing red means
   the box thinks it has lost contact with the printer, which can happen to one box while
   another box on the chain is busy for a long time (e.g. reading an untagged RFID spool). It
   clears as soon as the printer next sends that box a command.
