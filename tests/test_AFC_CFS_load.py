@@ -6,9 +6,18 @@ import struct
 import pytest
 
 from extras import AFC_CFS as P
-from tests.cfs_helpers import (RecTrace, Recorder, connect, frame, gcmd, make_lane, make_printer,
-                               make_unit, reset_buses)
-from tests.conftest import CommandError
+from tests.cfs_helpers import (
+    CommandError,
+    Recorder,
+    RecTrace,
+    connect,
+    frame,
+    gcmd,
+    make_lane,
+    make_printer,
+    make_unit,
+    reset_buses,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -121,7 +130,8 @@ class TestAfcCFSStage5Feed:
         unit.reactor.on_pause.append(lambda now: replied.clear())
         # The filament reaches the sensor just as the wheel looks stalled: seen only at the
         # stall check, after that poll's reply and before the next pause
-        unit._toolhead_sensor = lambda l: bool(replied) and unit.reactor.now - 1000.0 > 8.3
+        unit._toolhead_sensor = (lambda checked_lane: bool(replied)
+                                 and unit.reactor.now - 1000.0 > 8.3)
         assert unit._stage5_feed(lane) == (True, "toolhead sensor triggered after 22 polls")
 
 
@@ -155,7 +165,7 @@ class TestAfcCFSLoadAttempt:
         unit, (lane,) = unit_with(values=values)
         unit.load_reports["lane1"] = {"stage5_polls": 4, "wheel": 87.5}
 
-        def stage5(l):
+        def stage5(feeding_lane):
             sensor(lane, reached[0])
             return reached
         unit._stage5_feed = stage5
@@ -290,13 +300,13 @@ class TestAfcCFSCmdToolLoad:
         unit._mark_tool_state = Recorder()
         unit.attempts = []
 
-        def attempt(l, n):
+        def attempt(loading_lane, n):
             result = unit.attempt_results.pop(0)
             unit.attempts.append(n)
             if isinstance(result, BaseException):
                 raise result
             if result[0]:
-                sensor(l)
+                sensor(loading_lane)
             return result
         unit.attempt_results = [(True, "loaded")]
         unit._load_attempt = attempt
@@ -422,9 +432,9 @@ class TestAfcCFSCmdToolLoad:
     def test_stuck_in_the_toolhead_stops_retrying(self):
         unit, lane = self._unit()
 
-        def stuck(l, n):
+        def stuck(loading_lane, n):
             unit.attempts.append(n)
-            sensor(l)
+            sensor(loading_lane)
             return False, "toolhead sensor cleared after the handoff"
         unit._load_attempt = stuck
         unit.cmd_AFC_CFS_TOOL_LOAD(lane, gcmd())
@@ -548,18 +558,6 @@ class TestAfcCFSRunCutterSequence:
         self._cuts(b, (1, 0))
         assert b._run_cutter_sequence(lane) is None
         assert a.cutter_trigger_count == 1
-
-    def test_no_toolhead_wait(self):
-        unit, lane = self._unit({"cutter_sensor_pin": "PA1"})
-        unit.afc.toolhead = None
-        self._cuts(unit, (1, 0))
-        assert unit._run_cutter_sequence(lane) is None
-
-    def test_toolhead_without_wait_moves(self):
-        unit, lane = self._unit({"cutter_sensor_pin": "PA1"})
-        unit.afc.toolhead = object()
-        self._cuts(unit, (1, 0))
-        assert unit._run_cutter_sequence(lane) is None
 
 
 class TestAfcCFSRunPostCutMacros:

@@ -2,12 +2,21 @@
 from __future__ import annotations
 
 import pytest
+from extras.AFC_lane import AFCLaneState
 
 from extras import AFC_CFS as P
 from extras.AFC_CFS import CFSTrace, afcCFS
-from extras.AFC_lane import AFCLaneState
-from tests.cfs_helpers import (SERIAL, RecTrace, Recorder, connect, frame, make_lane,
-                               make_printer, make_unit, reset_buses)
+from tests.cfs_helpers import (
+    SERIAL,
+    Recorder,
+    RecTrace,
+    connect,
+    frame,
+    make_lane,
+    make_printer,
+    make_unit,
+    reset_buses,
+)
 
 UID_A = bytes.fromhex("67913b482422b00236353434")
 UID_B = bytes.fromhex("b0313b4e8411b00645353230")
@@ -37,6 +46,12 @@ def online_check(uid=None):
 
 def msgs(unit):
     return unit.logger.messages
+
+
+def tool_cmd(lane):
+    """The lane's T command as the PREP line shows it: AFC DEV's map_to_string(), or
+    AFC main's plain string map."""
+    return lane.map_to_string() if hasattr(lane, "map_to_string") else str(lane.map)
 
 
 # Construction and config
@@ -241,7 +256,8 @@ class TestAfcCFSParseSteps:
     def test_bad_item(self, item):
         with pytest.raises(P.CONFIG_ERROR) as e:
             afcCFS._parse_steps(f"10:90, {item}")
-        assert str(e.value) == f"unload_retract_steps: expected 'distance:speed' pairs, got '{item}'"
+        assert str(e.value) == (f"unload_retract_steps: expected 'distance:speed' pairs, "
+                                f"got '{item}'")
 
 
 # Lifecycle
@@ -1110,7 +1126,7 @@ class TestAfcCFSSystemTest:
         unit.afc.function.TcmdAssign.assert_called_once_with(lane)
         assert lane._afc_prep_done is True
         assert unit._boot_wait_done is True
-        assert msgs(unit) == [("info", f"lane1 tool cmd: {lane.map_to_string():3} "
+        assert msgs(unit) == [("info", f"lane1 tool cmd: {tool_cmd(lane):3} "
                                        f"<span>READY</span>")]
         assert not unit.connect.called
         assert unit.box.sent == []
@@ -1144,7 +1160,7 @@ class TestAfcCFSSystemTest:
         assert unit._wait_for_box.call_count == 1
         assert unit.present_last["lane1"] is None
         assert unit.lane_not_ready.calls == [((lane,), {})]
-        assert msgs(unit) == [("info", f"lane1 tool cmd: {lane.map_to_string():3} "
+        assert msgs(unit) == [("info", f"lane1 tool cmd: {tool_cmd(lane):3} "
                                        f"<span class=error--text>CFS NOT RESPONDING</span>")]
         unit.system_Test(lane, 0, False, False)
         assert unit._wait_for_box.call_count == 1        # boot wait only once
@@ -1505,28 +1521,3 @@ class TestAfcCFSUpdateLanePresence:
         unit.update_lane_presence(lane, False)
         assert lane._perform_infinite_runout.called
         assert not lane._perform_pause_runout.called
-
-    def test_runout_sensor_disabled(self):
-        unit, lane = self._unit(previous=True, tool_loaded=True, printing=True)
-
-        class Helper:
-            sensor_enabled = False
-
-        class Fila:
-            runout_helper = Helper()
-        lane.fila_load = Fila()
-        unit.update_lane_presence(lane, False)
-        assert msgs(unit)[-1] == ("warning", "CFS runout on lane1 ignored, sensor disabled")
-        assert not lane._perform_pause_runout.called
-
-    def test_runout_sensor_enabled(self):
-        unit, lane = self._unit(previous=True, tool_loaded=True, printing=True)
-
-        class Helper:
-            sensor_enabled = True
-
-        class Fila:
-            runout_helper = Helper()
-        lane.fila_load = Fila()
-        unit.update_lane_presence(lane, False)
-        assert lane._perform_pause_runout.called

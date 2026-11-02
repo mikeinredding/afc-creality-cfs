@@ -9,12 +9,11 @@ import termios
 import threading
 
 import pytest
+from tests.conftest import MockLogger
 
 from extras import AFC_CFS as P
 from extras.AFC_CFS import CFSBus, CFSTrace, CFSTransport
 from tests.cfs_helpers import ScriptedBox, frame, reset_buses
-from tests.conftest import MockLogger
-
 
 # Fakes
 
@@ -523,7 +522,8 @@ class TestCFSTransportOpen:
         monkeypatch.setattr(P.termios, "tcgetattr",
                             lambda fd: (_ for _ in ()).throw(termios.error(25, "not a tty")))
         assert t.open() is True
-        assert t.logger.messages == [("debug", "CFS bus x: termios setup warning: (25, 'not a tty')")]
+        assert t.logger.messages == [
+            ("debug", "CFS bus x: termios setup warning: (25, 'not a tty')")]
         t.close()
 
 

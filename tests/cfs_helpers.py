@@ -13,10 +13,45 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
+from extras.AFC_lane import AFCLane
+from tests.conftest import MockAFC, MockConfig, MockPrinter
+
 from extras import AFC_CFS as P
 from extras.AFC_CFS import CFSBus, Frame, afcCFS
-from extras.AFC_lane import AFCLane
-from tests.conftest import MockAFC, MockConfig, MockGCodeCommand, MockPrinter
+
+try:
+    from tests.conftest import CommandError, MockGCodeCommand
+except ImportError:      # AFCProject main's conftest predates these; same behavior here
+    from unittest.mock import MagicMock
+
+    class CommandError(Exception):       # type: ignore[no-redef]
+        pass
+
+    class MockGCodeCommand:              # type: ignore[no-redef]
+        """G-code command: get()/get_int()/get_float() with Klipper's default handling."""
+
+        _missing = object()
+
+        def __init__(self, params: Optional[Dict[str, Any]] = None) -> None:
+            self._params = dict(params or {})
+            self.error = MagicMock(side_effect=lambda *a, **kw: CommandError(*a, **kw))
+            self.respond_info = MagicMock()
+            self.respond_raw = MagicMock()
+            self.get = MagicMock(side_effect=self._get)
+            self.get_int = MagicMock(side_effect=lambda n, d=self._missing, **kw:
+                                     self._get(n, d, int, **kw))
+            self.get_float = MagicMock(side_effect=lambda n, d=self._missing, **kw:
+                                       self._get(n, d, float, **kw))
+
+        def _get(self, name: str, default: Any = _missing, parser: Any = str,
+                 minval: Any = None, maxval: Any = None, above: Any = None,
+                 below: Any = None) -> Any:
+            value = self._params.get(name)
+            if value is None:
+                if default is self._missing:
+                    raise self.error(f"missing {name}")
+                return default
+            return parser(value)
 
 Reply = Union[Frame, None, Callable[[bytes], Optional[Frame]]]
 
@@ -294,6 +329,27 @@ class RecTrace:
         return [e for e, _ in self.events]
 
 
+def complete_afc(afc: Any) -> Any:
+    """
+    Give an older AFC test mock (AFCProject main's conftest) the settings a real
+    AFCLane reads that only newer mocks carry. Values match AFC DEV's MockAFC.
+
+    :param afc: MockAFC
+    :return Any: the same mock
+    """
+    from unittest.mock import MagicMock
+    defaults = {
+        "load_to_hub": True, "active_led_effects": [], "testing": False,
+        "afc_stats": MagicMock(), "TOOL_LOAD": MagicMock(return_value=True),
+        "TOOL_UNLOAD": MagicMock(return_value=True),
+        "_check_extruder_temp": MagicMock(return_value=False), "enable_multiple_mapping": False,
+    }
+    for name, value in defaults.items():
+        if not hasattr(afc, name):
+            setattr(afc, name, value)
+    return afc
+
+
 def reset_buses() -> None:
     """Forget every serial chain, so units in different tests never share one."""
     CFSBus._buses.clear()
@@ -305,7 +361,7 @@ def make_printer() -> MockPrinter:
     reactor = TimedReactor()
     printer._reactor = reactor
     printer.reactor = reactor
-    afc = printer._afc
+    afc = complete_afc(printer._afc)
     afc.reactor = reactor
     # AFC.cfg options the CFS reads, neutral values; tests set what they need
     afc.tool_cut = False
@@ -370,6 +426,6 @@ def connect(unit: afcCFS) -> afcCFS:
     return unit
 
 
-def gcmd(**params: Any) -> MockGCodeCommand:
+def gcmd(**params: Any) -> Any:
     """A G-code command with these parameters."""
     return MockGCodeCommand(params=params)
