@@ -1248,12 +1248,13 @@ class afcCFS(afcUnit):
         # Abort stage 5 early if the measuring wheel hasn't moved for this long
         self.stage5_stall_time = config.getfloat("stage5_stall_time", 8.0, minval=1.)
         self.stage5_stall_distance = config.getfloat("stage5_stall_distance", 2.0, minval=0.)
-        # Toolhead-side prime moves interleaved with stages 6 and 7.
-        # Stock firmware values: 10mm @ 35mm/min, then 5mm @ 10mm/min.
+        # Toolhead-side prime moves interleaved with stages 6 and 7. Stock firmware:
+        # 10mm @ 35mm/min, then 5mm @ 10mm/min. Stock runs that slow second push only
+        # as a fallback; 600 mm/min loaded reliably on a K1 Max and saves ~30 s a load.
         self.prime1_length = config.getfloat("prime1_length", 10.0, minval=0.)
         self.prime1_speed = config.getfloat("prime1_speed", 35.0, above=0.)   # mm/min
         self.prime2_length = config.getfloat("prime2_length", 5.0, minval=0.)
-        self.prime2_speed = config.getfloat("prime2_speed", 10.0, above=0.)   # mm/min
+        self.prime2_speed = config.getfloat("prime2_speed", 600.0, above=0.)  # mm/min
         self.stage7_arg = config.getint("stage7_arg", 3, minval=0, maxval=255)
         # Send SET_BOX_MODE [00][01] after the load to clear the EXTRUDE_ERR8 the
         # box latches. Those bytes are the feed/change-mode command and take the

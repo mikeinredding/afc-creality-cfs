@@ -47,9 +47,8 @@ Tested on a K1 with one box and a K1 Max with two boxes, both on Simple AF.
 - With more than one box, set `box_uid` on each. Without it the boxes are addressed in the
   order they answer, which can change between power-ups and swap your lanes.
   `AFC_CFS_STATUS UNIT=<name>` shows a box's uid.
-- A load takes about one to two minutes: heating, the box feeding to the toolhead sensor, then
-  two short extruder pushes (`prime1`, `prime2`) while the box hands over. The prime speeds are
-  Creality's stock values and are slow; see `prime2_speed` below.
+- A load takes about a minute: heating, the box feeding to the toolhead sensor, then two short
+  extruder pushes (`prime1`, `prime2`) while the box hands over; see *Load speed* below.
 - Set `auto_home: True` in `[AFC]` so a tool change on an unhomed printer homes first instead
   of stopping with "Please home printer before doing a tool load".
 - The box's lights: a pulsing white slot is the one loaded to the toolhead. Chasing red means
@@ -160,10 +159,11 @@ Spoolman. A lane that already has a Spoolman spool is left alone.
 - If a tagged spool reads as no tag, turn the spool around so the tag faces the reader.
 
 ### Load speed
-`prime1_speed` (35) and `prime2_speed` (10) are in mm/min and match Creality's stock firmware,
-which makes the second push take about 30 seconds. Raising `prime2_speed` (for example to
-`600`) in each `[AFC_CFS]` section shortens every tool change by about that much; check that
-loads still succeed on the first try before keeping it.
+The two pushes during the handoff are set in mm/min. `prime1_speed` (35) is Creality's stock
+value. `prime2_speed` defaults to 600; Creality's stock firmware uses 10, which adds about
+30 seconds to every load, and only runs that slow push as a fallback. If loads fail at the
+handoff ("toolhead sensor cleared after the handoff"), set `prime2_speed: 10` in the
+`[AFC_CFS]` section to go back to stock.
 
 ### Slicer setup
 In OrcaSlicer, set up the printer as described on the [slicer setup](../installation/slicer-setup.md)
