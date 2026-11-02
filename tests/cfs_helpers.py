@@ -178,6 +178,14 @@ class CfsExtruder:
         self.tc_lane = None
         self.check_lanes = Recorder()
         self.set_status_led = Recorder()
+        self.estats = ExtruderStats()
+
+
+class ExtruderStats:
+    """AFC_extruder.estats stand-in: counts cuts."""
+
+    def __init__(self) -> None:
+        self.increase_cut_total = Recorder()
 
 
 class FakeMutex:
@@ -297,7 +305,16 @@ def make_printer() -> MockPrinter:
     reactor = TimedReactor()
     printer._reactor = reactor
     printer.reactor = reactor
-    printer._afc.reactor = reactor
+    afc = printer._afc
+    afc.reactor = reactor
+    # AFC.cfg options the CFS reads, neutral values; tests set what they need
+    afc.tool_cut = False
+    afc.tool_cut_cmd = "AFC_CUT"
+    afc.park = False
+    afc.park_cmd = None
+    afc.form_tip = False
+    afc.form_tip_cmd = None
+    afc.move_e_pos = Recorder()
     printer._objects["AFC_extruder extruder"] = CfsExtruder()
     return printer
 
