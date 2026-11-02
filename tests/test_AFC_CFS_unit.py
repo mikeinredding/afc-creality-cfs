@@ -1402,6 +1402,36 @@ class TestAfcCFSLaneTrace:
                                                      "toolhead_sensor": False})]
 
 
+class TestAfcCFSTraceBoxState:
+    def test_reads_and_records(self):
+        unit, (_, lane) = unit_with(lanes=(1, 2))
+        unit.online = True
+        unit.box.reply(P.GET_BOX_STATE, frame(P.GET_BOX_STATE, status=P.ST_EXTRUDE_ERR8))
+        lane.extruder_obj.tool_start_state = True
+        unit._trace_box_state(lane, "prime1")
+        assert unit.box.keys() == [(1, P.GET_BOX_STATE, b"")]
+        assert unit.trace.events == [("box_state", {"lane": "lane2", "slot": "B",
+                                                    "point": "prime1", "status": "EXTRUDE_ERR8",
+                                                    "toolhead_sensor": True})]
+
+    def test_no_reply(self):
+        unit, (lane,) = unit_with()
+        unit.online = True
+        unit.box.default_ok = False
+        unit._trace_box_state(lane, "stage7")
+        assert unit.trace.events == [("box_state", {"lane": "lane1", "slot": "A",
+                                                    "point": "stage7", "status": "NO_REPLY",
+                                                    "toolhead_sensor": False})]
+
+    def test_nothing_sent_without_a_trace(self):
+        unit, (lane,) = unit_with()
+        unit.online = True
+        unit.trace = RecTrace(enabled=False)
+        unit._trace_box_state(lane, "toolhead")
+        assert unit.box.sent == []
+        assert unit.trace.events == []
+
+
 class TestAfcCFSLaneFail:
     def test_logs_and_hands_to_afc(self):
         unit, (lane,) = unit_with()

@@ -174,14 +174,21 @@ class TestAfcCFSLoadAttempt:
     def test_full_sequence(self):
         unit, lane = self._unit()
         assert unit._load_attempt(lane, 0) == (True, "loaded")
+        state = (1, P.GET_BOX_STATE, b"")
         assert unit.box.keys() == LOAD_START + [
             (1, P.EXTRUDE_PROCESS, b"\x01\x00\x00"),
             (1, P.EXTRUDE_PROCESS, b"\x01\x04\x00"),
+            state,
+            state,
             (1, P.EXTRUDE_PROCESS, b"\x01\x06\x00"),
+            state,
+            state,
             (1, P.EXTRUDE_PROCESS, b"\x01\x07\x03"),
+            state,
             (1, P.SET_BOX_MODE, b"\x01\x00"),
             (1, P.TIGHTEN_UP_ENABLE, b"\x00"),
             (1, P.CTRL_CONNECTION_MOTOR_ACTION, b"\x00"),
+            state,
         ]
         # Prime 1 (10 mm at 35 mm/min) before stage 6, prime 2 (5 at 600) before stage 7
         assert unit.afc.move_e_pos.calls == [
@@ -194,8 +201,15 @@ class TestAfcCFSLoadAttempt:
             ("stage5_result", {"lane": "lane1", "slot": "A", "reached": True,
                                "detail": "toolhead sensor triggered after 4 polls", "attempt": 1,
                                "polls": 4, "wheel": 87.5, "seconds": 0.0}),
+        ] + [
+            ("box_state", {"lane": "lane1", "slot": "A", "point": point, "status": "OK",
+                           "toolhead_sensor": True})
+            for point in ("toolhead", "prime1", "stage6", "prime2", "stage7")
+        ] + [
             ("handoff", {"lane": "lane1", "slot": "A", "attempt": 1, "stage6": "OK",
                          "stage7": "OK", "stage7_arg": 3, "toolhead_sensor": True}),
+            ("box_state", {"lane": "lane1", "slot": "A", "point": "print_mode", "status": "OK",
+                           "toolhead_sensor": True}),
         ]
         assert msgs(unit) == [("debug", "CFS lane1: stage 5 toolhead sensor triggered after 4 "
                                         "polls")]
@@ -274,7 +288,8 @@ class TestAfcCFSLoadAttempt:
     def test_clear_mode_after_load(self):
         unit, lane = self._unit({"clear_mode_after_load": True})
         unit._load_attempt(lane, 0)
-        assert unit.box.keys()[-1] == (1, P.SET_BOX_MODE, b"\x00\x01")
+        assert unit.box.keys()[-2:] == [(1, P.SET_BOX_MODE, b"\x00\x01"),
+                                         (1, P.GET_BOX_STATE, b"")]
 
     def test_sensor_lost_after_handoff(self):
         unit, lane = self._unit()

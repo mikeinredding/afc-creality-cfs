@@ -2122,6 +2122,21 @@ class afcCFS(afcUnit):
         """
         self.trace.event(ev, lane=lane.name, slot=P.slot_letter(lane.index), **fields)
 
+    def _trace_box_state(self, lane: AFCLane, point: str) -> None:
+        """
+        With tracing on, read the box's state and record it, to see when
+        the box latches an error during the handoff. Nothing is sent
+        without a trace.
+
+        :param lane: lane to act on
+        :param point: where in the load this is
+        """
+        if not self.trace.enabled:
+            return
+        status = self.read_box_status()
+        self._lane_trace(lane, "box_state", point=point, status=P.status_name(status),
+                         toolhead_sensor=self._toolhead_sensor(lane))
+
     def _lane_fail(self, lane: AFCLane, message: str) -> None:
         """
         Log a lane failure and hand it to AFC's error handling.
@@ -2290,14 +2305,19 @@ class afcCFS(afcUnit):
 
         # Handoff: the toolhead extruder grabs the filament while the box
         # finishes its stages.
+        self._trace_box_state(lane, "toolhead")
         if self.prime1_length > 0:
             self._e_move(self.prime1_length, self.prime1_speed, "prime 1")
+        self._trace_box_state(lane, "prime1")
         reply = self.extrude_stage(bits, 0x06)
         self.load_reports[lane.name]["stage6"] = P.status_name(reply.status if reply else None)
+        self._trace_box_state(lane, "stage6")
         if self.prime2_length > 0:
             self._e_move(self.prime2_length, self.prime2_speed, "prime 2")
+        self._trace_box_state(lane, "prime2")
         reply = self.extrude_stage(bits, 0x07, self.stage7_arg)
         self.load_reports[lane.name]["stage7"] = P.status_name(reply.status if reply else None)
+        self._trace_box_state(lane, "stage7")
         if (reply is None
             or not reply.ok):
             stage7 = self.load_reports[lane.name]["stage7"]
@@ -2315,6 +2335,7 @@ class afcCFS(afcUnit):
         self.connection_motor(P.CONN_STOP)
         if self.clear_mode_after_load:
             self.clear_latched_error()
+        self._trace_box_state(lane, "print_mode")
 
         if not self._toolhead_sensor(lane):
             return False, "toolhead sensor cleared after the handoff"
