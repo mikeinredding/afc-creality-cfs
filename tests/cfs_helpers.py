@@ -180,14 +180,124 @@ class CfsExtruder:
         self.set_status_led = Recorder()
 
 
+class FakeMutex:
+    """Reactor mutex: test() says whether it is held."""
+
+    def __init__(self) -> None:
+        self.locked = False
+
+    def test(self) -> bool:
+        return self.locked
+
+    def __enter__(self) -> "FakeMutex":
+        self.locked = True
+        return self
+
+    def __exit__(self, *exc: Any) -> bool:
+        self.locked = False
+        return False
+
+
+class Timer:
+    """A registered reactor timer."""
+
+    def __init__(self, callback: Callable[[float], float], waketime: float) -> None:
+        self.callback = callback
+        self.waketime = waketime
+
+
+class TimedReactor:
+    """
+    Reactor whose clock moves forward on pause(), so loops that wait on
+    monotonic() end. on_pause hooks run at each pause (a box changing state
+    while the unit waits).
+    """
+
+    NOW = 0.0
+    NEVER = 9_999_999_999.0
+
+    def __init__(self, now: float = 1000.0) -> None:
+        self.now = now
+        self.pauses: List[float] = []
+        self.on_pause: List[Callable[[float], None]] = []
+        self.timers: List[Timer] = []
+        self.unregistered: List[Timer] = []
+        self.updated: List[Tuple[Timer, float]] = []
+        self.callbacks: List[Any] = []
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def pause(self, until: float) -> float:
+        self.pauses.append(until)
+        self.now = max(self.now, until)
+        for hook in list(self.on_pause):
+            hook(self.now)
+        return self.now
+
+    def mutex(self, is_locked: bool = False) -> FakeMutex:
+        return FakeMutex()
+
+    def completion(self) -> Any:
+        raise AssertionError("unit tests talk to a ScriptedBox, not a real completion")
+
+    def register_timer(self, callback: Callable[[float], float], waketime: float = NEVER) -> Timer:
+        timer = Timer(callback, waketime)
+        self.timers.append(timer)
+        return timer
+
+    def update_timer(self, timer: Timer, waketime: float) -> None:
+        timer.waketime = waketime
+        self.updated.append((timer, waketime))
+
+    def unregister_timer(self, timer: Timer) -> None:
+        self.unregistered.append(timer)
+
+    def register_callback(self, callback: Any, waketime: float = NOW) -> None:
+        self.callbacks.append(callback)
+
+    def register_async_callback(self, callback: Any, waketime: float = NOW) -> None:
+        self.callbacks.append(callback)
+
+
+class RecTrace:
+    """Stands in for a unit's CFSTrace: records events instead of writing a file."""
+
+    def __init__(self, enabled: bool = True) -> None:
+        self.enabled = enabled
+        self.events: List[Tuple[str, Dict[str, Any]]] = []
+        self.stopped = False
+        self.path = "/tmp/cfs_trace.jsonl"
+        self.written = 0
+        self.dropped = 0
+        self.last_error: Optional[str] = None
+
+    def event(self, ev: str, **fields: Any) -> None:
+        self.events.append((ev, fields))
+
+    def stop(self, timeout: float = 2.0) -> None:
+        self.stopped = True
+
+    def start(self) -> bool:
+        self.enabled = True
+        return True
+
+    def names(self) -> List[str]:
+        return [e for e, _ in self.events]
+
+
 def reset_buses() -> None:
     """Forget every serial chain, so units in different tests never share one."""
     CFSBus._buses.clear()
 
 
 def make_printer() -> MockPrinter:
-    """A printer with the CFS hub and extruder sections registered."""
+    """A printer with the CFS extruder registered and a TimedReactor."""
     printer = MockPrinter(afc=MockAFC())
+    reactor = TimedReactor()
+    printer._reactor = reactor
+    printer.reactor = reactor
+    printer._afc.reactor = reactor
     printer._objects["AFC_extruder extruder"] = CfsExtruder()
     return printer
 
