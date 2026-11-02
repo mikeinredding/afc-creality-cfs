@@ -3,6 +3,11 @@
 # Copyright (C) 2026 AFCProject
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
+#
+# Creality CFS support originally written by Mikeinredding (with AI assistance) and
+# Jean-Claude Van Code (Claude, Anthropic's AI).
+# Idea and support from Pellcorp and the incredible SimpleAF community.
+# Protocol details from tomaspakosta/k1c-cfs-klipper (GNU GPLv3).
 
 # Creality CFS (Color Filament System) unit.
 #
