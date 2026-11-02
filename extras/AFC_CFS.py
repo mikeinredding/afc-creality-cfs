@@ -1110,7 +1110,7 @@ class CFSBus:
             taken.add(addr)
             assigned.append((uid, addr))
             owner = f" ({unit.name})" if unit is not None else ""
-            self.logger.info(f"CFS bus {self.transport.path}: box uid {uid.hex()} -> "
+            self.logger.debug(f"CFS bus {self.transport.path}: box uid {uid.hex()} -> "
                              f"address {addr}{owner}")
         return assigned
 
@@ -1339,6 +1339,7 @@ class afcCFS(afcUnit):
         self._quiet_requests = False
         self._poll_timer = None
         self._lane_commands: Set[str] = set()  # lanes whose AFC_CFS_* commands are registered
+        self._offline_warned = False     # an "offline" warning is showing; say when it's back
         # Per lane: last slot presence seen (None = unknown) and the last load report
         self.present_last: Dict[str, Optional[bool]] = {}
         self.load_reports: Dict[str, Dict[str, Any]] = {}
@@ -1526,7 +1527,7 @@ class afcCFS(afcUnit):
 
         reply = self._probe()
         if reply is None:
-            self.logger.info(f"CFS {self.name}: no reply at address {self.box_addr}, "
+            self.logger.debug(f"CFS {self.name}: no reply at address {self.box_addr}, "
                              f"trying discovery")
             found = self.bus.discover(timeout=max(self.request_timeout, 1.5))
             reply = self._probe() if found else None
@@ -1536,7 +1537,7 @@ class afcCFS(afcUnit):
                 return False
             for uid, addr in found:
                 if addr == self.box_addr:
-                    self.logger.info(f"CFS {self.name}: addressed box uid {uid.hex()} at {addr}")
+                    self.logger.debug(f"CFS {self.name}: addressed box uid {uid.hex()} at {addr}")
         uid = bytes(reply.data[2:14]) if len(reply.data) >= 14 else None
         if uid is not None:
             self.seen_uid = uid
@@ -1578,8 +1579,11 @@ class afcCFS(afcUnit):
                 self.version_sn = P.decode_ascii(reply.data)
             self.trace.event("online", box_addr=self.box_addr, version=self.version_sn)
             version = self.version_sn or "unknown"
-            self.logger.info(f"CFS {self.name}: online (addr {self.box_addr}, "
-                             f"version {version})")
+            # Shown only when it follows an "offline" warning; at start-up PREP's "CFS Ready"
+            # already says so
+            log = self.logger.info if self._offline_warned else self.logger.debug
+            self._offline_warned = False
+            log(f"CFS {self.name}: online (addr {self.box_addr}, version {version})")
         return True
 
     def _set_offline(self, reason: Optional[str]) -> None:
@@ -1590,6 +1594,7 @@ class afcCFS(afcUnit):
         """
         if self.online:
             self.logger.warning(f"CFS {self.name}: offline ({reason})")
+            self._offline_warned = True
             self.trace.event("offline", reason=reason)
         self.online = False
 
@@ -1972,7 +1977,7 @@ class afcCFS(afcUnit):
         self.set_box_mode(P.MODE_PRINT, bits)
         self.trace.event("print_mode_restored", lane=lane.name,
                          slot=P.slot_letter(lane.index), box_state=reply.data.hex())
-        self.logger.info(f"CFS {self.name}: slot {P.slot_letter(lane.index)} is loaded in "
+        self.logger.debug(f"CFS {self.name}: slot {P.slot_letter(lane.index)} is loaded in "
                          f"the toolhead; set print mode again (box state was "
                          f"{reply.data.hex()})")
 
@@ -2152,18 +2157,18 @@ class afcCFS(afcUnit):
             if (not present
                 and not lane.tool_loaded):
                 lane.set_unloaded()
-            self.logger.info(f"CFS {lane.name}: box online, slot {slot}: {msg}")
+            self.logger.debug(f"CFS {lane.name}: box online, slot {slot}: {msg}")
             self.afc.save_vars()
             return
 
         if present:
-            self.logger.info(f"CFS {lane.name}: spool detected in slot {slot}")
+            self.logger.debug(f"CFS {lane.name}: spool detected in slot {slot}")
             if lane.status not in (AFCLaneState.LOADED, AFCLaneState.TOOLED,
                                    AFCLaneState.TOOL_LOADED):
                 lane.set_loaded()
             self.on_filament_insert(lane)
         else:
-            self.logger.info(f"CFS {lane.name}: slot {slot} is empty")
+            self.logger.debug(f"CFS {lane.name}: slot {slot} is empty")
             self.on_filament_remove(lane)
             if (lane.tool_loaded
                 and self.afc.function.is_printing()):
@@ -2246,7 +2251,7 @@ class afcCFS(afcUnit):
         self.pre_loading(P.PRELOAD_CLOSE)
         status = self.read_box_status()
         if status not in (None, P.ST_OK, P.ST_UPDATE_STATE):
-            self.logger.info(f"CFS {lane.name}: box reported {P.status_name(status)} before "
+            self.logger.debug(f"CFS {lane.name}: box reported {P.status_name(status)} before "
                              f"load, clearing")
         self.set_box_mode(P.MODE_IDLE)
         self._pause(settle)
@@ -2274,7 +2279,7 @@ class afcCFS(afcUnit):
                          polls=self.load_reports[lane.name].get("stage5_polls"),
                          wheel=self.load_reports[lane.name].get("wheel"),
                          seconds=round(self.reactor.monotonic() - stage5_start, 2))
-        self.logger.info(f"CFS {lane.name}: stage 5 {detail}")
+        self.logger.debug(f"CFS {lane.name}: stage 5 {detail}")
         if not reached:
             self._box_cleanup()
             # Pull the partial feed back so the next attempt starts clean
@@ -2360,7 +2365,7 @@ class afcCFS(afcUnit):
         with self.operation():
             for attempt in range(self.load_attempts):
                 attempts_used = attempt + 1
-                self.logger.info(f"CFS {lane.name}: loading slot {slot}, "
+                self.logger.debug(f"CFS {lane.name}: loading slot {slot}, "
                                  f"try {attempt + 1}/{self.load_attempts}")
                 try:
                     ok, detail = self._load_attempt(lane, attempt)
@@ -2562,7 +2567,7 @@ class afcCFS(afcUnit):
                 ok, detail = False, f"error: {e}"
                 self.logger.debug(traceback.format_exc())
 
-        self.logger.info(f"CFS {lane.name}: unload {detail}")
+        self.logger.debug(f"CFS {lane.name}: unload {detail}")
         self._lane_trace(lane, "unload_end", ok=ok, detail=detail,
                          seconds=round(self.reactor.monotonic() - started, 2))
         if not ok:
@@ -2815,8 +2820,9 @@ class afcCFS(afcUnit):
         self.lane_tags[lane.name] = tag
         self.trace.event("rfid", lane=lane.name, slot=P.slot_letter(lane.index), spin=spin,
                          replies=replies, tag=tag)
-        self.logger.info(f"CFS {lane.name}: slot {P.slot_letter(lane.index)} tag: "
-                         f"{self._tag_summary(tag)}")
+        # A found tag is news; "none" from an automatic read isn't
+        log = self.logger.info if tag is not None else self.logger.debug
+        log(f"CFS {lane.name}: slot {P.slot_letter(lane.index)} tag: {self._tag_summary(tag)}")
         return tag
 
     @staticmethod
