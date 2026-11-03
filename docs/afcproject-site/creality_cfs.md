@@ -63,8 +63,8 @@ Tested on a K1 with one box and a K1 Max with two boxes, both on Simple AF.
   in the console as well.
 
 ### Installing
-Copy `templates/AFC_CFS_1.cfg` into your AFC config folder (`AFC/` next to `printer.cfg`), and
-`templates/AFC_CFS_2.cfg` for a second box. Then edit:
+Copy `templates/AFC_CFS_1.cfg` into your AFC config folder (`AFC/` next to `printer.cfg`).
+For more boxes, see *Multiple CFS units* below. Then edit:
 
 - `serial:` - run `ls /dev/serial/by-id/` and pick the `1a86` device. Every box on a chain uses
   the same `serial`.
@@ -136,8 +136,9 @@ filament (`cutter_require_trigger: True`).
 ### Multiple CFS units
 The RS-485 cable is daisy-chained: printer, adapter, box 1 IN, box 1 OUT, box 2 IN, and so on.
 In the config, one `[AFC_CFS]` section per box, all with the same `serial`, each with its own
-`box_addr` (1-4) and `box_uid`, and all with `hub: CFS_1`. Box 2's lanes are `lane5`-`lane8`
-(`templates/AFC_CFS_2.cfg`).
+`box_addr` (1-4) and `box_uid`, and all with `hub: CFS_1`. Set `cutter_sensor_pin` on the first
+box only. Box 2's lanes are `lane5`-`lane8` with `unit: CFS_2:1` to `CFS_2:4`; the template's
+header has a step-by-step version.
 
 To find each box's uid: with only box 1 connected, run `AFC_CFS_STATUS UNIT=CFS_1` and copy
 its `box uid`. Connect box 2 and power-cycle both; the console names the new box's uid
@@ -187,7 +188,8 @@ tool is loaded before the purge line.
 - `AFC_CFS_RECONNECT UNIT=<name>` reopens the link to a box.
 - `trace_file: <path>` in an `[AFC_CFS]` section records everything the unit sends to and gets
   from the box, with load and unload timings. `AFC_CFS_TRACE UNIT=<name> MARK="..."` adds a
-  marker before a test, and `utilities/cfs_trace_summary.py <file>` summarizes a trace. Attach
-  the trace when reporting a problem.
+  marker before a test, and `cfs_trace_summary.py` from
+  [afc-creality-cfs](https://github.com/mikeinredding/afc-creality-cfs) summarizes a trace.
+  Attach the trace when reporting a problem.
 - `AFC_CFS_RAW` sends a single raw frame to the box. It's for protocol debugging only: motor
   commands sent this way bypass all of AFC's checks.
