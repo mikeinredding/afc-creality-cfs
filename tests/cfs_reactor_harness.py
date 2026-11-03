@@ -15,6 +15,7 @@ reports the longest the reactor was ever unable to service it.
 """
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -726,6 +727,20 @@ def sc_two_boxes_load_while_polling(r):
     unit2.connect()
     rig.unit._cfs_handle_ready()
     unit2._cfs_handle_ready()
+    # Count box 1's polls only while box 2 holds the chain for its sequence;
+    # box 1 may be polled during the unload's cut, which is outside it. Each
+    # poll reads the sensor state twice (material, then connections), so one
+    # poll already under way as box 2 takes the chain shows up as 2 frames.
+    busy_polls = []
+    hold_chain = unit2.operation
+
+    @contextlib.contextmanager
+    def watched_operation():
+        with hold_chain():
+            start = box1.count(P.GET_FILAMENT_SENSOR_STATE)
+            yield
+            busy_polls.append(box1.count(P.GET_FILAMENT_SENSOR_STATE) - start)
+    unit2.operation = watched_operation
     wait(r, 0.5)
     polls_before = box1.count(P.GET_FILAMENT_SENSOR_STATE)
     lane5.unit_obj.cmd_AFC_CFS_TOOL_LOAD(lane5, None)
@@ -744,12 +759,13 @@ def sc_two_boxes_load_while_polling(r):
         "unloaded": sim.position == 0.0 and not sim.toolhead_sensor,
         "box1_never_got_motor_commands": box1.count(P.EXTRUDE_PROCESS) == 0
                                          and box1.count(P.RETRUDE_PROCESS) == 0,
-        "box1_not_polled_while_box2_busy": polls_during <= 1,
+        "box1_not_polled_while_box2_busy": (len(busy_polls) == 2
+                                            and all(n <= 2 for n in busy_polls)),
         "box1_polled_again_after": polls_after > 0,
         "box1_still_online": rig.unit.online,
         "reactor_never_stalled": dog.never_stalled,
     }, {"failures": rig.failures, "max_gap_ms": round(dog.max_gap * 1000, 2),
-        "box1_polls": [polls_before, polls_during, polls_after]}
+        "box1_polls": [polls_before, polls_during, polls_after], "busy_polls": busy_polls}
 
 
 def sc_stage5_reply_lost(r):

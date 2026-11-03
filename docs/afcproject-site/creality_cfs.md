@@ -47,13 +47,14 @@ Tested on a K1 with one box and a K1 Max with two boxes, both on Simple AF.
 - With more than one box, set `box_uid` on each. Without it the boxes are addressed in the
   order they answer, which can change between power-ups and swap your lanes.
   `AFC_CFS_STATUS UNIT=<name>` shows a box's uid.
-- A load takes about a minute: heating, the box feeding to the toolhead sensor, then two short
-  extruder pushes (`prime1`, `prime2`) while the box hands over; see *Load speed* below.
+- A load takes about 25 seconds once the nozzle is hot: the box feeding to the toolhead sensor,
+  then two short extruder pushes (`prime1`, `prime2`) while the box hands over; see *Load speed*
+  below.
 - Set `auto_home: True` in `[AFC]` so a tool change on an unhomed printer homes first instead
   of stopping with "Please home printer before doing a tool load".
 - The box's lights: a pulsing white slot is the one loaded to the toolhead. During a load,
-  the loading slot flashes red for a few seconds once the filament reaches the toolhead, then
-  goes back to white. Stock firmware doesn't do this; the load still completes normally.
+  the loading slot flashes red for about two seconds once the filament reaches the toolhead,
+  until the box finishes its hand-off; the load completes normally.
   Chasing red means
   the box thinks it has lost contact with the printer, which can happen to one box while
   another box on the chain is busy for a long time (e.g. reading an untagged RFID spool). It
@@ -162,11 +163,17 @@ Spoolman. A lane that already has a Spoolman spool is left alone.
 - If a tagged spool reads as no tag, turn the spool around so the tag faces the reader.
 
 ### Load speed
-The two pushes during the handoff are set in mm/min. `prime1_speed` (35) is Creality's stock
-value. `prime2_speed` defaults to 600; Creality's stock firmware uses 10, which adds about
-30 seconds to every load, and only runs that slow push as a fallback. If loads fail at the
-handoff ("toolhead sensor cleared after the handoff"), set `prime2_speed: 10` in the
-`[AFC_CFS]` section to go back to stock.
+The two pushes during the handoff are set in mm/min, and both default faster than Creality's
+stock firmware:
+
+- `prime1_speed` defaults to 300 (stock 35). The box shows the slot red from the moment the
+  filament reaches the toolhead until this push ends, so at stock speed it stays red for about
+  17 seconds.
+- `prime2_speed` defaults to 600 (stock 10, which adds about 30 seconds to every load). Stock
+  runs that slow push only as a fallback.
+
+If loads fail at the handoff ("toolhead sensor cleared after the handoff"), set
+`prime1_speed: 35` and `prime2_speed: 10` in the `[AFC_CFS]` section to go back to stock.
 
 ### Slicer setup
 In OrcaSlicer, set up the printer as described on the [slicer setup](../installation/slicer-setup.md)

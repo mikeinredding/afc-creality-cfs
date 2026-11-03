@@ -112,12 +112,11 @@ watchdog that fails the test if anything blocks the reactor.
   presumably sends some recovery message after a reconnect that this plugin doesn't
   know yet; captures from a stock K1 covering a restart would show it.
 
-- **The slot's light flashes red during a load.** When the filament reaches the
-  toolhead, the loading slot's light flashes red for a few seconds, then goes
-  back to pulsing white. The load itself completes normally. Stock firmware
-  doesn't do this. The likely cause is the error the box latches after a feed
-  (`EXTRUDE_ERR8`, shown red), which stock clears during its hand-off and this
-  plugin only clears when it sets print mode; not yet confirmed.
+- **The slot's light flashes red for about two seconds during a load.** When the
+  filament reaches the toolhead the box reports `EXTRUDE_ERR8` (shown red) until
+  stage 6 of the hand-off, after the first extruder push. The load completes
+  normally. At Creality's stock push speed (`prime1_speed: 35`) this lasts about
+  17 seconds; the 300 mm/min default keeps it short.
 
 ## Credits
 

@@ -190,9 +190,9 @@ class TestAfcCFSLoadAttempt:
             (1, P.CTRL_CONNECTION_MOTOR_ACTION, b"\x00"),
             state,
         ]
-        # Prime 1 (10 mm at 35 mm/min) before stage 6, prime 2 (5 at 600) before stage 7
+        # Prime 1 (10 mm at 300 mm/min) before stage 6, prime 2 (5 at 600) before stage 7
         assert unit.afc.move_e_pos.calls == [
-            ((10.0, 35.0 / 60, "CFS prime 1"), {"wait_tool": True}),
+            ((10.0, 300.0 / 60, "CFS prime 1"), {"wait_tool": True}),
             ((5.0, 600.0 / 60, "CFS prime 2"), {"wait_tool": True}),
         ]
         assert unit.load_reports["lane1"]["stage6"] == "OK"

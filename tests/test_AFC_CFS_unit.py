@@ -113,7 +113,7 @@ class TestAfcCFSLoadCfsConfig:
             "trace_max_size": 5.0, "trace_backups": 1, "trace_polls": False,
             "load_attempts": 2, "stage_settle_time": 0.3, "stage5_poll_interval": 0.4,
             "stage5_reply_timeout": 2.0, "stage5_timeout": 60.0, "stage5_stall_time": 8.0,
-            "stage5_stall_distance": 2.0, "prime1_length": 10.0, "prime1_speed": 35.0,
+            "stage5_stall_distance": 2.0, "prime1_length": 10.0, "prime1_speed": 300.0,
             "prime2_length": 5.0, "prime2_speed": 600.0, "stage7_arg": 3,
             "clear_mode_after_load": False, "unload_retract_steps": [(15.0, 600.0), (45.0, 1800.0)],
             "unload_tip_wiggle": False, "unload_timeout": 30.0, "cutter_wait_time": 3.0,
@@ -340,7 +340,7 @@ class TestAfcCFSTraceSettings:
             "stage_settle_time": 0.3, "stage_timeout": 30.0, "checkin_timeout": 5.0,
             "resync_timeout": 60.0, "stage5_poll_interval": 0.4, "stage5_reply_timeout": 2.0,
             "stage5_timeout": 60.0, "stage5_stall_time": 8.0, "stage5_stall_distance": 2.0,
-            "prime1_length": 10.0, "prime1_speed": 35.0, "prime2_length": 5.0,
+            "prime1_length": 10.0, "prime1_speed": 300.0, "prime2_length": 5.0,
             "prime2_speed": 600.0, "stage7_arg": 3, "clear_mode_after_load": False,
             "unload_retract_steps": [(15.0, 600.0), (45.0, 1800.0)],
             "unload_tip_wiggle": False, "unload_timeout": 30.0}

@@ -1251,8 +1251,10 @@ class afcCFS(afcUnit):
         # Toolhead-side prime moves interleaved with stages 6 and 7. Stock firmware:
         # 10mm @ 35mm/min, then 5mm @ 10mm/min. Stock runs that slow second push only
         # as a fallback; 600 mm/min loaded reliably on a K1 Max and saves ~30 s a load.
+        # The box holds EXTRUDE_ERR8 (slot light red) from the toolhead sensor until
+        # stage 6, so prime1 at 300 mm/min keeps that to ~2 s instead of ~17 s.
         self.prime1_length = config.getfloat("prime1_length", 10.0, minval=0.)
-        self.prime1_speed = config.getfloat("prime1_speed", 35.0, above=0.)   # mm/min
+        self.prime1_speed = config.getfloat("prime1_speed", 300.0, above=0.)  # mm/min
         self.prime2_length = config.getfloat("prime2_length", 5.0, minval=0.)
         self.prime2_speed = config.getfloat("prime2_speed", 600.0, above=0.)  # mm/min
         self.stage7_arg = config.getint("stage7_arg", 3, minval=0, maxval=255)
