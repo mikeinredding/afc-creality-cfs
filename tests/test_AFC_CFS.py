@@ -8,6 +8,7 @@ from those captures, not from the code under test.
 """
 from __future__ import annotations
 
+import ast
 import configparser
 import errno
 import importlib.util
@@ -5127,9 +5128,43 @@ def _render_leave_purge(y=230.0, homed="xyz", next_lane=None, current_load=None)
     return [line.strip() for line in text.splitlines() if line.strip()]
 
 
+def _render_park(x=50.0, y=230.0, z=0.2):
+    """Render AFC_CFS_PARK from AFC_CFS_1.cfg with its default variables and return its lines."""
+    path = next(p for p in TEMPLATES if p.name == "AFC_CFS_1.cfg")
+    cp = configparser.RawConfigParser(strict=False, inline_comment_prefixes=None,
+                                      comment_prefixes=("#", ";"))
+    cp.read(path)
+    section = "gcode_macro AFC_CFS_PARK"
+    # Klipper parses macro variables with ast.literal_eval
+    variables = {k[len("variable_"):]: ast.literal_eval(v.split("#")[0].strip())
+                 for k, v in cp.items(section) if k.startswith("variable_")}
+    env = jinja2.Environment("{%", "%}", "{", "}")
+    template = env.from_string(cp.get(section, "gcode"))
+    printer = {"gcode_move": {"gcode_position": {"x": x, "y": y, "z": z}},
+               "toolhead": {"axis_maximum": {"z": 300.0}}}
+    text = template.render(printer=printer, params={}, **variables)
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+class TestAfcCFSParkMacro:
+    def test_parks_from_behind_safe_y(self):
+        assert _render_park() == ["G90", "AFC_DISABLE_SKEW", "G1 Z30.0 F900",
+                                  "G1 Y215.0 F15000", "G1 X148.0 F15000",
+                                  "G1 Y225.3 F15000", "M400", "AFC_ENABLE_SKEW"]
+
+    def test_already_high_and_in_front(self):
+        assert _render_park(y=200.0, z=50.0) == ["G90", "AFC_DISABLE_SKEW", "G1 X148.0 F15000",
+                                                 "G1 Y225.3 F15000", "M400", "AFC_ENABLE_SKEW"]
+
+    def test_already_lined_up_in_x(self):
+        assert _render_park(x=148.0, z=50.0) == ["G90", "AFC_DISABLE_SKEW", "G1 Y225.3 F15000",
+                                                 "M400", "AFC_ENABLE_SKEW"]
+
+
 class TestAfcCFSLeavePurgeMacro:
-    LEAVES = ["SAVE_GCODE_STATE NAME=_afc_cfs_leave", "G90", "G1 Y215.0 F15000", "M400",
-              "G4 P1000", "RESTORE_GCODE_STATE NAME=_afc_cfs_leave"]
+    LEAVES = ["SAVE_GCODE_STATE NAME=_afc_cfs_leave", "G90", "AFC_DISABLE_SKEW",
+              "G1 Y215.0 F15000", "M400", "AFC_ENABLE_SKEW", "G4 P1000",
+              "RESTORE_GCODE_STATE NAME=_afc_cfs_leave"]
 
     def test_leaves_the_chute(self):
         assert _render_leave_purge() == self.LEAVES
