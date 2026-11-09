@@ -185,6 +185,7 @@ SENSOR_BANK_CONNECTIONS = 0x01
 BUFFER_MIDDLE = 0x00
 BUFFER_FULL = 0x01
 BUFFER_EMPTY = 0x02
+BUFFER_NAMES = {BUFFER_MIDDLE: "middle", BUFFER_FULL: "full", BUFFER_EMPTY: "empty"}
 
 # Slot bits, physical left-to-right. AFC lane index 1..4 maps to A..D.
 SLOT_BITS = (0x01, 0x02, 0x04, 0x08)
@@ -238,6 +239,16 @@ def status_name(code: Optional[int]) -> str:
     if code is None:
         return "NO_REPLY"
     return STATUS_NAMES.get(code, f"0x{code:02X}")
+
+
+def buffer_state_name(state: int) -> str:
+    """
+    Readable name of a GET_BUFFER_STATE value.
+
+    :param state: buffer state byte
+    :return str: middle, full, empty, or 0x.. for unknown values
+    """
+    return BUFFER_NAMES.get(state, f"0x{state:02X}")
 
 
 def fn_name(fn: int) -> str:
@@ -1332,6 +1343,7 @@ class afcCFS(afcUnit):
                              box_addr=self.box_addr, settings=self._trace_settings())
         self._traced_mask: Optional[int] = None
         self._traced_print_state: Optional[str] = None
+        self._traced_buffer_state: Optional[int] = None
 
         # Box state, as last seen
         self.online = False
@@ -1516,7 +1528,39 @@ class afcCFS(afcUnit):
         state = status.get("state")
         if state != self._traced_print_state:
             self._traced_print_state = state
-            self.trace.event("print_state", state=state, filename=status.get("filename"))
+            self.trace.event("print_state", state=state, filename=status.get("filename"),
+                             filament_used=status.get("filament_used"))
+
+    def _filament_used(self) -> Optional[float]:
+        """
+        Filament the current print has used so far (net of retracts), from print_stats.
+
+        :return float: mm, or None without print_stats
+        """
+        stats = self.printer.lookup_object("print_stats", None)
+        if stats is None:
+            return None
+        try:
+            return float(stats.get_status(self.reactor.monotonic()).get("filament_used", 0.0))
+        except Exception:
+            return None
+
+    def _trace_buffer_state(self) -> None:
+        """
+        Record each change of the buffer state with how much filament the print had used,
+        to measure how far the extruder pulls between changes during a normal print.
+        """
+        state = self.buffer_state
+        if (not self.trace.enabled
+            or state is None
+            or state == self._traced_buffer_state):
+            return
+        previous = self._traced_buffer_state
+        self._traced_buffer_state = state
+        self.trace.event("buffer", state=P.buffer_state_name(state),
+                         previous=None if previous is None else P.buffer_state_name(previous),
+                         printing=self._is_printing(), filament_used=self._filament_used(),
+                         loaded=self.afc.current)
 
     # Connection
 
@@ -1879,6 +1923,7 @@ class afcCFS(afcUnit):
             if connected is not None:
                 self._mirror_connections(connected)
             self.read_buffer_state()
+            self._trace_buffer_state()
             self._queue_startup_tag_reads()
         except Exception:
             self.logger.debug(f"CFS {self.name}: poll failed\n{traceback.format_exc()}")

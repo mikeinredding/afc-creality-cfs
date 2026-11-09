@@ -34,6 +34,28 @@ needs_summary = pytest.mark.skipif(summary is None, reason="cfs_trace_summary.py
 
 @needs_summary
 class TestTraceSummarySummarize:
+    def test_buffer_changes_while_printing(self):
+        t = 1_760_000_000.0
+        def buf(dt, state, used, printing=True):
+            return {"ts": t + dt, "ev": "buffer", "state": state, "printing": printing,
+                    "filament_used": used}
+        events = [
+            buf(0, "full", 0.0, printing=False),      # before the print: ignored
+            buf(10, "middle", 5.0),
+            buf(70, "empty", 45.0),
+            buf(75, "full", 47.5),
+            buf(200, "middle", 0.0),                  # next print restarts at 0: no gap
+        ]
+        buf_out = io.StringIO()
+        summary.summarize(events, out=buf_out)
+        lines = buf_out.getvalue().splitlines()
+        i = lines.index("Buffer while printing: 4 changes")
+        assert lines[i + 1:i + 4] == [
+            "  states: middle x2, empty x1, full x1",
+            "  filament between changes (mm): min 2.5  avg 21.2  max 40.0",
+            "  longest: 40 mm in 'middle' (60 s)",
+        ]
+
     def test_summary_reports_failures_and_link_problems(self):
         t = 1_760_000_000.0
         events = [

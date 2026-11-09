@@ -157,6 +157,23 @@ def summarize(events, out=sys.stdout):
         p("  cuts: {}{}".format(len(cuts), ", {} where the blade did not release".format(
             unreleased) if unreleased else ""))
 
+    # Buffer during prints: how far the print got between buffer state changes
+    buf = [e for e in events if e["ev"] == "buffer" and e.get("printing")
+           and e.get("filament_used") is not None]
+    if buf:
+        p("\nBuffer while printing: {} changes".format(len(buf)))
+        counts = Counter(e.get("state") for e in buf)
+        p("  states: " + ", ".join("{} x{}".format(k, v) for k, v in counts.most_common()))
+        gaps = []
+        for a, b in zip(buf, buf[1:]):
+            used = b["filament_used"] - a["filament_used"]
+            if used >= 0:          # a new print starts again at 0
+                gaps.append((used, a.get("state"), b["ts"] - a["ts"]))
+        if gaps:
+            p("  filament between changes (mm): {}".format(stats([g[0] for g in gaps])))
+            longest = max(gaps)
+            p("  longest: {:.0f} mm in '{}' ({:.0f} s)".format(*longest))
+
     # Link health
     tx = [e for e in events if e["ev"] == "tx"]
     rx = [e for e in events if e["ev"] == "rx"]

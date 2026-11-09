@@ -111,6 +111,14 @@ class TestStatusName:
         assert P.status_name(0x7E) == "0x7E"
 
 
+class TestBufferStateName:
+    def test_known_states(self):
+        assert [P.buffer_state_name(s) for s in (0x00, 0x01, 0x02)] == ["middle", "full", "empty"]
+
+    def test_unknown_state_is_hex(self):
+        assert P.buffer_state_name(0x07) == "0x07"
+
+
 class TestFnName:
     def test_known_code(self):
         assert P.fn_name(0x10) == "EXTRUDE_PROCESS"
@@ -1991,15 +1999,19 @@ class TestAfcCFSHeartbeat:
 
 
 class PrintStats:
-    def __init__(self, state="standby", filename=None, raises=False):
+    def __init__(self, state="standby", filename=None, raises=False, filament_used=None):
         self.state = state
         self.filename = filename
         self.raises = raises
+        self.filament_used = filament_used
 
     def get_status(self, eventtime):
         if self.raises:
             raise RuntimeError("stats not ready")
-        return {"state": self.state, "filename": self.filename}
+        status = {"state": self.state, "filename": self.filename}
+        if self.filament_used is not None:
+            status["filament_used"] = self.filament_used
+        return status
 
 
 class TestAfcCFSIsPrinting:
@@ -2051,10 +2063,84 @@ class TestAfcCFSTracePrintState:
         stats.state = "complete"
         unit._trace_print_state()
         assert unit.trace.events == [
-            ("print_state", {"state": "printing", "filename": "coin.gcode"}),
-            ("print_state", {"state": "complete", "filename": "coin.gcode"}),
+            ("print_state", {"state": "printing", "filename": "coin.gcode",
+                             "filament_used": None}),
+            ("print_state", {"state": "complete", "filename": "coin.gcode",
+                             "filament_used": None}),
         ]
         assert unit._traced_print_state == "complete"
+
+    def test_records_filament_used(self):
+        unit, _ = unit_with()
+        unit.printer._objects["print_stats"] = PrintStats("complete", "coin.gcode",
+                                                          filament_used=1234.5)
+        unit._trace_print_state()
+        assert unit.trace.events == [
+            ("print_state", {"state": "complete", "filename": "coin.gcode",
+                             "filament_used": 1234.5}),
+        ]
+
+
+class TestAfcCFSFilamentUsed:
+    def test_no_print_stats(self):
+        unit, _ = unit_with()
+        assert unit._filament_used() is None
+
+    def test_reads_print_stats(self):
+        unit, _ = unit_with()
+        unit.printer._objects["print_stats"] = PrintStats("printing", filament_used=812.25)
+        assert unit._filament_used() == 812.25
+
+    def test_missing_field_is_zero(self):
+        unit, _ = unit_with()
+        unit.printer._objects["print_stats"] = PrintStats("standby")
+        assert unit._filament_used() == 0.0
+
+    def test_stats_error(self):
+        unit, _ = unit_with()
+        unit.printer._objects["print_stats"] = PrintStats(raises=True)
+        assert unit._filament_used() is None
+
+
+class TestAfcCFSTraceBufferState:
+    def test_trace_off(self):
+        unit, _ = unit_with()
+        unit.trace.enabled = False
+        unit.buffer_state = P.BUFFER_FULL
+        unit._trace_buffer_state()
+        assert unit._traced_buffer_state is None
+
+    def test_no_reading_yet(self):
+        unit, _ = unit_with()
+        unit._trace_buffer_state()
+        assert unit.trace.events == []
+
+    def test_records_each_change_once(self):
+        unit, (lane,) = unit_with()
+        unit.printer._objects["print_stats"] = PrintStats("printing", filament_used=100.0)
+        unit.afc.current = "lane1"
+        unit.buffer_state = P.BUFFER_FULL
+        unit._trace_buffer_state()
+        unit._trace_buffer_state()
+        unit.printer._objects["print_stats"].filament_used = 142.5
+        unit.buffer_state = P.BUFFER_MIDDLE
+        unit._trace_buffer_state()
+        assert unit.trace.events == [
+            ("buffer", {"state": "full", "previous": None, "printing": True,
+                        "filament_used": 100.0, "loaded": "lane1"}),
+            ("buffer", {"state": "middle", "previous": "full", "printing": True,
+                        "filament_used": 142.5, "loaded": "lane1"}),
+        ]
+
+    def test_not_printing(self):
+        unit, _ = unit_with()
+        unit.afc.current = None
+        unit.buffer_state = P.BUFFER_EMPTY
+        unit._trace_buffer_state()
+        assert unit.trace.events == [
+            ("buffer", {"state": "empty", "previous": None, "printing": False,
+                        "filament_used": None, "loaded": None}),
+        ]
 
 
 # Connection
