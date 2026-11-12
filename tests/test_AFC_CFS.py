@@ -1453,6 +1453,7 @@ class TestCFSBusInit:
         bus = CFSBus(reactor, "/dev/a", 230400, logger, False)
         assert (bus.reactor, bus.logger, bus.units) == (reactor, logger, [])
         assert (bus.transport.baud, bus.transport.debug) == (230400, False)
+        assert (bus.fault_buffer_state, bus.fault_filament_ref, bus.fault_lane) == (None,) * 3
 
 
 class TestCFSBusRegister:
@@ -1744,6 +1745,7 @@ class TestAfcCFSLoadCfsConfig:
             "rfid_insert_delay": 10.0, "rfid_spin": True, "rfid_busy_timeout": 150.0,
             "rfid_read_attempts": 3, "rfid_retry_interval": 5.0, "rfid_read_at_startup": False,
             "rfid_startup_delay": 15.0, "rfid_materials": {},
+            "error_sensitivity": 0.0, "fault_length": 0.0,
         }
         assert {k: getattr(unit, k) for k in expected} == expected
 
@@ -1763,6 +1765,11 @@ class TestAfcCFSLoadCfsConfig:
 
     def test_uid_none_value(self):
         assert make_unit(values={"box_uid": None}).box_uid is None
+
+    @pytest.mark.parametrize("sensitivity,length", [(1, 300.0), (3, 240.0), (10, 30.0)])
+    def test_filament_error_sensitivity_sets_fault_length(self, sensitivity, length):
+        unit = make_unit(values={"filament_error_sensitivity": sensitivity})
+        assert (unit.error_sensitivity, unit.fault_length) == (float(sensitivity), length)
 
     def test_materials_and_steps_parsed(self):
         unit = make_unit(values={"rfid_materials": "00003=PETG",
@@ -2100,6 +2107,148 @@ class TestAfcCFSFilamentUsed:
         unit, _ = unit_with()
         unit.printer._objects["print_stats"] = PrintStats(raises=True)
         assert unit._filament_used() is None
+
+
+class TestAfcCFSCheckFilamentFault:
+    def _unit(self, sensitivity=1):
+        """Printing from lane1 with the buffer in middle; the count starts at 100 mm."""
+        unit, (lane,) = unit_with(values={"filament_error_sensitivity": sensitivity})
+        unit.afc.lanes = {"lane1": lane}
+        unit.afc.current = "lane1"
+        unit.afc.error = MagicMock()
+        stats = PrintStats("printing", filament_used=100.0)
+        unit.printer._objects["print_stats"] = stats
+        unit.buffer_state = P.BUFFER_MIDDLE
+        unit._check_filament_fault()
+        return unit, lane, stats
+
+    def _state(self, unit):
+        bus = unit.bus
+        return bus.fault_buffer_state, bus.fault_filament_ref, bus.fault_lane
+
+    def test_first_reading_starts_the_count(self):
+        unit, _, _ = self._unit()
+        assert self._state(unit) == (P.BUFFER_MIDDLE, 100.0, "lane1")
+
+    def test_not_printing_resets(self):
+        unit, _, stats = self._unit()
+        stats.state = "paused"
+        unit._check_filament_fault()
+        assert self._state(unit) == (P.BUFFER_MIDDLE, None, "lane1")
+
+    def test_no_buffer_reading_resets(self):
+        unit, _, stats = self._unit()
+        unit.buffer_state = None
+        stats.filament_used = 900.0
+        unit._check_filament_fault()
+        assert self._state(unit) == (None, 900.0, "lane1")
+        assert not unit.afc.error.AFC_error.called
+
+    def test_lane_change_resets(self):
+        unit, _, stats = self._unit()
+        unit.afc.current = "lane2"
+        stats.filament_used = 900.0
+        unit._check_filament_fault()
+        assert self._state(unit) == (P.BUFFER_MIDDLE, 900.0, "lane2")
+        assert not unit.afc.error.AFC_error.called
+
+    def test_buffer_change_resets(self):
+        unit, _, stats = self._unit()
+        unit.buffer_state = P.BUFFER_FULL
+        stats.filament_used = 900.0
+        unit._check_filament_fault()
+        assert self._state(unit) == (P.BUFFER_FULL, 900.0, "lane1")
+        assert not unit.afc.error.AFC_error.called
+
+    def test_count_restarts_after_not_printing(self):
+        unit, _, stats = self._unit()
+        stats.state = "paused"
+        unit._check_filament_fault()           # ref is now None
+        stats.state = "printing"
+        stats.filament_used = 900.0
+        unit._check_filament_fault()
+        assert self._state(unit) == (P.BUFFER_MIDDLE, 900.0, "lane1")
+        assert not unit.afc.error.AFC_error.called
+
+    def test_new_print_resets(self):
+        unit, _, stats = self._unit()
+        stats.filament_used = 20.0              # a new print starts again from 0
+        unit._check_filament_fault()
+        assert self._state(unit) == (P.BUFFER_MIDDLE, 20.0, "lane1")
+
+    def test_off(self):
+        unit, _, stats = self._unit(sensitivity=0)
+        stats.filament_used = 5000.0
+        unit._check_filament_fault()
+        assert not unit.afc.error.AFC_error.called
+        assert self._state(unit) == (P.BUFFER_MIDDLE, 100.0, "lane1")
+
+    def test_unknown_lane(self):
+        unit, _, stats = self._unit()
+        unit.afc.lanes = {}
+        stats.filament_used = 5000.0
+        unit._check_filament_fault()
+        assert not unit.afc.error.AFC_error.called
+
+    def test_lane_on_another_unit(self):
+        unit, lane, stats = self._unit()
+        lane.unit_obj = object()
+        stats.filament_used = 5000.0
+        unit._check_filament_fault()
+        assert not unit.afc.error.AFC_error.called
+
+    def test_within_the_distance(self):
+        unit, _, stats = self._unit()
+        stats.filament_used = 400.0             # exactly 300 mm: not over
+        unit._check_filament_fault()
+        assert not unit.afc.error.AFC_error.called
+        assert self._state(unit) == (P.BUFFER_MIDDLE, 100.0, "lane1")
+
+    def test_middle_pauses_without_a_hint(self):
+        unit, _, stats = self._unit()
+        stats.filament_used = 400.5
+        unit._check_filament_fault()
+        unit.afc.error.AFC_error.assert_called_once_with(
+            "AFC filament fault detected! Take necessary action."
+            "\nCFS lane1: buffer stayed middle for 300 mm of extrusion", True)
+        assert unit.trace.events == [("filament_fault", {"lane": "lane1", "state": "middle",
+                                                         "moved": 300.5})]
+        assert self._state(unit) == (P.BUFFER_MIDDLE, 400.5, "lane1")
+
+    def test_full_is_a_clog(self):
+        unit, _, stats = self._unit()
+        unit.buffer_state = P.BUFFER_FULL
+        unit._check_filament_fault()            # count from the change to full
+        stats.filament_used = 500.0
+        unit._check_filament_fault()
+        unit.afc.error.AFC_error.assert_called_once_with(
+            "AFC filament fault detected! Take necessary action.\nCLOG DETECTED"
+            "\nCFS lane1: buffer stayed full for 400 mm of extrusion", True)
+
+    def test_empty_is_not_feeding(self):
+        unit, _, stats = self._unit()
+        unit.buffer_state = P.BUFFER_EMPTY
+        unit._check_filament_fault()
+        stats.filament_used = 500.0
+        unit._check_filament_fault()
+        unit.afc.error.AFC_error.assert_called_once_with(
+            "AFC filament fault detected! Take necessary action.\nAFC NOT FEEDING"
+            "\nCFS lane1: buffer stayed empty for 400 mm of extrusion", True)
+
+    def test_another_box_on_the_chain_resets_the_count(self):
+        unit, _, stats = self._unit()
+        other, _ = unit_with(lanes=(1,), name="CFS_2")
+        other.bus = unit.bus
+        other.afc = unit.afc
+        other.printer._objects["print_stats"] = stats
+        other.buffer_state = P.BUFFER_FULL      # box 2 saw the buffer top up
+        stats.filament_used = 350.0
+        other._check_filament_fault()
+        stats.filament_used = 500.0
+        unit.buffer_state = P.BUFFER_FULL
+        unit._check_filament_fault()
+        assert not unit.afc.error.AFC_error.called
+        assert self._state(unit) == (P.BUFFER_FULL, 350.0, "lane1")
 
 
 class TestAfcCFSTraceBufferState:

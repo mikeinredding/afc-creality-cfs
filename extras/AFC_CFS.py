@@ -185,6 +185,7 @@ SENSOR_BANK_CONNECTIONS = 0x01
 BUFFER_MIDDLE = 0x00
 BUFFER_FULL = 0x01
 BUFFER_EMPTY = 0x02
+FAULT_STEP_MM = 30.0   # filament_error_sensitivity step for the CFS buffer
 BUFFER_NAMES = {BUFFER_MIDDLE: "middle", BUFFER_FULL: "full", BUFFER_EMPTY: "empty"}
 
 # Slot bits, physical left-to-right. AFC lane index 1..4 maps to A..D.
@@ -1034,6 +1035,11 @@ class CFSBus:
         self.transport = CFSTransport(reactor, path, baud, logger,
                                       f"CFS bus {path}", debug=debug)
         self.units: List[Any] = []
+        # Filament fault check: the 4-in-1 buffer is shared by every box on the chain, so a
+        # change any box reports counts. Last state seen, and the print's filament used then.
+        self.fault_buffer_state: Optional[int] = None
+        self.fault_filament_ref: Optional[float] = None
+        self.fault_lane: Optional[str] = None
 
     def register(self, unit: Any) -> None:
         """
@@ -1300,6 +1306,13 @@ class afcCFS(afcUnit):
         # colour, material and weight (or its Spoolman spool, if the tag has
         # an ID). Never during a print. Off by default.
         self.rfid_read = config.getboolean("rfid_read", False)
+        # Pause when a print extrudes this far without the buffer changing state (clog or
+        # tangle). Same 0-10 scale as AFC's [AFC_buffer] option (0 off, 10 most sensitive);
+        # the CFS buffer changes less often than a TurtleNeck, so each step is 30 mm, not 10.
+        self.error_sensitivity = config.getfloat("filament_error_sensitivity", 0.0,
+                                                 minval=0., maxval=10.)
+        self.fault_length = ((11 - self.error_sensitivity) * FAULT_STEP_MM
+                             if self.error_sensitivity > 0 else 0.0)
         # Wait after the spool is detected, so the box finishes drawing it in
         self.rfid_insert_delay = config.getfloat("rfid_insert_delay", 10.0, minval=0.)
         # Turn the slot first (SET_PRE_LOADING RUN), like stock BOX_INFO_REFRESH.
@@ -1544,6 +1557,47 @@ class afcCFS(afcUnit):
             return float(stats.get_status(self.reactor.monotonic()).get("filament_used", 0.0))
         except Exception:
             return None
+
+    def _check_filament_fault(self) -> None:
+        """
+        While printing from one of this unit's lanes, pause if the print has used more than
+        fault_length of filament since the chain's buffer last changed state. A buffer stuck
+        full means the extruder isn't pulling (clog); stuck empty, the box isn't feeding.
+        """
+        bus = self.bus
+        state = self.buffer_state
+        used = self._filament_used() if self._is_printing() else None
+        lane_name = self.afc.current
+        if (used is None
+            or state is None
+            or lane_name != bus.fault_lane
+            or state != bus.fault_buffer_state
+            or bus.fault_filament_ref is None
+            or used < bus.fault_filament_ref):
+            # Not printing, a lane change, a buffer change or a new print: start counting again
+            bus.fault_buffer_state = state
+            bus.fault_filament_ref = used
+            bus.fault_lane = lane_name
+            return
+        lane = self.afc.lanes.get(lane_name)
+        if (self.fault_length <= 0
+            or lane is None
+            or lane.unit_obj is not self):
+            return
+        moved = used - bus.fault_filament_ref
+        if moved <= self.fault_length:
+            return
+        bus.fault_filament_ref = used
+        msg = "AFC filament fault detected! Take necessary action."
+        if state == BUFFER_FULL:
+            msg += "\nCLOG DETECTED"
+        elif state == BUFFER_EMPTY:
+            msg += "\nAFC NOT FEEDING"
+        msg += (f"\nCFS {lane_name}: buffer stayed {P.buffer_state_name(state)} for "
+                f"{moved:.0f} mm of extrusion")
+        self.trace.event("filament_fault", lane=lane_name, state=P.buffer_state_name(state),
+                         moved=round(moved, 1))
+        self.afc.error.AFC_error(msg, True)
 
     def _trace_buffer_state(self) -> None:
         """
@@ -1924,6 +1978,7 @@ class afcCFS(afcUnit):
                 self._mirror_connections(connected)
             self.read_buffer_state()
             self._trace_buffer_state()
+            self._check_filament_fault()
             self._queue_startup_tag_reads()
         except Exception:
             self.logger.debug(f"CFS {self.name}: poll failed\n{traceback.format_exc()}")
