@@ -33,6 +33,7 @@ import termios
 import threading
 import time
 import traceback
+from enum import Enum
 from typing import (TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple, Optional, Set,
                     Tuple)
 
@@ -191,15 +192,21 @@ BUFFER_EMPTY = 0x02
 FAULT_STEP_STUCK_MM = 10.0    # filament_error_sensitivity step, buffer stuck full/empty (AFC's)
 FAULT_STEP_MIDDLE_MM = 30.0   # step with the buffer in middle (the CFS tops up less often)
 BUFFER_NAMES = {BUFFER_MIDDLE: "middle", BUFFER_FULL: "full", BUFFER_EMPTY: "empty"}
-# Why a tag read has to wait (tag_read_blocker); also shown to the user
-BLOCK_PRINTING = "a print is running"
-BLOCK_OFFLINE = "box offline"
-BLOCK_BUSY = "box busy"
-BLOCK_LOADED = "lane is loaded"
-BLOCK_OTHER_LOADED = "another slot of this box is loaded"
-BLOCK_EMPTY = "slot is empty"
+
+
+class TagReadBlocker(str, Enum):
+    """Why a tag read has to wait (tag_read_blocker); the value is shown to the user."""
+    PRINTING      = "a print is running"
+    OFFLINE       = "box offline"
+    BUSY          = "box busy"
+    LOADED        = "lane is loaded"
+    OTHER_LOADED  = "another slot of this box is loaded"
+    EMPTY         = "slot is empty"
+
+
 # Blockers that won't clear on their own: the queued read is dropped, not retried
-BLOCKS_FOR_GOOD = (BLOCK_EMPTY, BLOCK_LOADED)
+BLOCKS_FOR_GOOD = (TagReadBlocker.EMPTY, TagReadBlocker.LOADED)
+
 DISCOVERY_ROUNDS = 8   # two per possible box: room to resend an address whose ack was lost
 
 # Slot bits, physical left-to-right. AFC lane index 1..4 maps to A..D.
@@ -2803,7 +2810,7 @@ class afcCFS(afcUnit):
             raise gcmd.error(error_str)
         blocker = self.tag_read_blocker(lane)
         if blocker is not None:
-            error_str = f"CFS {lane.name}: can't read the tag now ({blocker})"
+            error_str = f"CFS {lane.name}: can't read the tag now ({blocker.value})"
             raise gcmd.error(error_str)
         spin = gcmd.get_int("SPIN", 1 if self.rfid_spin else 0, minval=0, maxval=1)
         tag = self.read_tag(lane, spin=bool(spin))
@@ -2870,32 +2877,32 @@ class afcCFS(afcUnit):
         else:
             self.reactor.update_timer(self._rfid_timer, min(self._rfid_queue.values()))
 
-    def tag_read_blocker(self, lane: AFCLane) -> Optional[str]:
+    def tag_read_blocker(self, lane: AFCLane) -> Optional[TagReadBlocker]:
         """
         Why this lane's tag can't be read right now, or None.
 
         :param lane: lane to act on
-        :return Optional[str]: reason, or None
+        :return Optional[TagReadBlocker]: reason, or None
         """
         if self.afc.function.in_print():
-            return BLOCK_PRINTING
+            return TagReadBlocker.PRINTING
         if not self.online:
-            return BLOCK_OFFLINE
+            return TagReadBlocker.OFFLINE
         if (self.bus.operation_active
             or self.transport.busy):
-            return BLOCK_BUSY
+            return TagReadBlocker.BUSY
         if (lane.tool_loaded
             or (self.connected_mask is not None
                 and self.connected_mask & P.slot_bit(lane.index))):
-            return BLOCK_LOADED
+            return TagReadBlocker.LOADED
         # Untested: turning one slot while another of this box is loaded
         # (that slot is in print mode). Wait until the box is unloaded.
         if (self.connected_mask
             or any(other.tool_loaded for other in self.lanes.values())):
-            return BLOCK_OTHER_LOADED
+            return TagReadBlocker.OTHER_LOADED
         if (self.material_mask is not None
             and not self.material_mask & P.slot_bit(lane.index)):
-            return BLOCK_EMPTY
+            return TagReadBlocker.EMPTY
         return None
 
     def _rfid_tick(self, eventtime: float) -> float:
