@@ -140,6 +140,8 @@ class Rig:
         self.logger = Logger()
 
         afc = complete_afc(MockAFC())
+        afc.function.is_printing.return_value = False
+        afc.function.in_print.return_value = False
         afc.tool_cut = True
         afc.tool_cut_cmd = "AFC_CUT"
         afc.park = False
@@ -1000,7 +1002,7 @@ def sc_rfid_not_during_print(r):
     lane1 = rig.lane(1)
     rig.afc.gcode.run_script = MagicMock()
     printing = {"on": True}
-    rig.unit._job_active = lambda: printing["on"]
+    rig.unit.afc.function.in_print = lambda: printing["on"]
     rig.unit.connect()
     rig.unit.read_material_mask()
     rig.unit.queue_tag_read(lane1, 0.05)
