@@ -363,6 +363,9 @@ def make_printer() -> MockPrinter:
     printer.reactor = reactor
     afc = complete_afc(printer._afc)
     afc.reactor = reactor
+    # Not printing unless a test says so (AFC_functions.is_printing / in_print)
+    afc.function.is_printing.return_value = False
+    afc.function.in_print.return_value = False
     # AFC.cfg options the CFS reads, neutral values; tests set what they need
     afc.tool_cut = False
     afc.tool_cut_cmd = "AFC_CUT"
