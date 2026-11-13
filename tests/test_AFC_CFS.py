@@ -1745,7 +1745,7 @@ class TestAfcCFSLoadCfsConfig:
             "rfid_insert_delay": 10.0, "rfid_spin": True, "rfid_busy_timeout": 150.0,
             "rfid_read_attempts": 3, "rfid_retry_interval": 5.0, "rfid_read_at_startup": False,
             "rfid_startup_delay": 15.0, "rfid_materials": {},
-            "error_sensitivity": 0.0, "fault_length": 0.0,
+            "error_sensitivity": 0.0, "fault_length_stuck": 0.0, "fault_length": 0.0,
         }
         assert {k: getattr(unit, k) for k in expected} == expected
 
@@ -1766,10 +1766,12 @@ class TestAfcCFSLoadCfsConfig:
     def test_uid_none_value(self):
         assert make_unit(values={"box_uid": None}).box_uid is None
 
-    @pytest.mark.parametrize("sensitivity,length", [(1, 300.0), (3, 240.0), (10, 30.0)])
-    def test_filament_error_sensitivity_sets_fault_length(self, sensitivity, length):
+    @pytest.mark.parametrize("sensitivity,stuck,middle", [(1, 100.0, 300.0), (3, 80.0, 240.0),
+                                                          (10, 10.0, 30.0)])
+    def test_filament_error_sensitivity_sets_fault_lengths(self, sensitivity, stuck, middle):
         unit = make_unit(values={"filament_error_sensitivity": sensitivity})
-        assert (unit.error_sensitivity, unit.fault_length) == (float(sensitivity), length)
+        assert (unit.error_sensitivity, unit.fault_length_stuck, unit.fault_length) == (
+            float(sensitivity), stuck, middle)
 
     def test_materials_and_steps_parsed(self):
         unit = make_unit(values={"rfid_materials": "00003=PETG",
@@ -2215,6 +2217,30 @@ class TestAfcCFSCheckFilamentFault:
                                                          "moved": 300.5})]
         assert self._state(unit) == (P.BUFFER_MIDDLE, 400.5, "lane1")
 
+    def test_full_within_afcs_distance(self):
+        unit, _, stats = self._unit()
+        unit.buffer_state = P.BUFFER_FULL
+        unit._check_filament_fault()
+        stats.filament_used = 200.0             # exactly 100 mm: not over
+        unit._check_filament_fault()
+        assert not unit.afc.error.AFC_error.called
+
+    def test_full_just_past_afcs_distance(self):
+        unit, _, stats = self._unit()
+        unit.buffer_state = P.BUFFER_FULL
+        unit._check_filament_fault()
+        stats.filament_used = 201.0
+        unit._check_filament_fault()
+        unit.afc.error.AFC_error.assert_called_once_with(
+            "AFC filament fault detected! Take necessary action.\nCLOG DETECTED"
+            "\nCFS lane1: buffer stayed full for 101 mm of extrusion", True)
+
+    def test_middle_is_not_held_to_afcs_distance(self):
+        unit, _, stats = self._unit()
+        stats.filament_used = 250.0             # 150 mm in middle: normal for the CFS
+        unit._check_filament_fault()
+        assert not unit.afc.error.AFC_error.called
+
     def test_full_is_a_clog(self):
         unit, _, stats = self._unit()
         unit.buffer_state = P.BUFFER_FULL
@@ -2244,7 +2270,7 @@ class TestAfcCFSCheckFilamentFault:
         other.buffer_state = P.BUFFER_FULL      # box 2 saw the buffer top up
         stats.filament_used = 350.0
         other._check_filament_fault()
-        stats.filament_used = 500.0
+        stats.filament_used = 420.0             # 320 mm since lane1's count began
         unit.buffer_state = P.BUFFER_FULL
         unit._check_filament_fault()
         assert not unit.afc.error.AFC_error.called

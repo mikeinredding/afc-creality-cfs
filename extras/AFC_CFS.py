@@ -185,7 +185,8 @@ SENSOR_BANK_CONNECTIONS = 0x01
 BUFFER_MIDDLE = 0x00
 BUFFER_FULL = 0x01
 BUFFER_EMPTY = 0x02
-FAULT_STEP_MM = 30.0   # filament_error_sensitivity step for the CFS buffer
+FAULT_STEP_STUCK_MM = 10.0    # filament_error_sensitivity step, buffer stuck full/empty (AFC's)
+FAULT_STEP_MIDDLE_MM = 30.0   # step with the buffer in middle (the CFS tops up less often)
 BUFFER_NAMES = {BUFFER_MIDDLE: "middle", BUFFER_FULL: "full", BUFFER_EMPTY: "empty"}
 
 # Slot bits, physical left-to-right. AFC lane index 1..4 maps to A..D.
@@ -1306,13 +1307,16 @@ class afcCFS(afcUnit):
         # colour, material and weight (or its Spoolman spool, if the tag has
         # an ID). Never during a print. Off by default.
         self.rfid_read = config.getboolean("rfid_read", False)
-        # Pause when a print extrudes this far without the buffer changing state (clog or
-        # tangle). Same 0-10 scale as AFC's [AFC_buffer] option (0 off, 10 most sensitive);
-        # the CFS buffer changes less often than a TurtleNeck, so each step is 30 mm, not 10.
+        # Pause when a print extrudes too far without the buffer changing state (clog or
+        # tangle). Same 0-10 scale as AFC's [AFC_buffer] option (0 off, 10 most sensitive).
+        # Stuck full or empty uses AFC's distance, (11 - value) x 10 mm: normally the buffer
+        # stays there ~10 mm at most. In middle the CFS goes up to ~160 mm between top-ups,
+        # so that backstop (a clog that leaves the buffer in middle) uses 30 mm steps.
         self.error_sensitivity = config.getfloat("filament_error_sensitivity", 0.0,
                                                  minval=0., maxval=10.)
-        self.fault_length = ((11 - self.error_sensitivity) * FAULT_STEP_MM
-                             if self.error_sensitivity > 0 else 0.0)
+        steps = 11 - self.error_sensitivity if self.error_sensitivity > 0 else 0.0
+        self.fault_length_stuck = steps * FAULT_STEP_STUCK_MM
+        self.fault_length = steps * FAULT_STEP_MIDDLE_MM
         # Wait after the spool is detected, so the box finishes drawing it in
         self.rfid_insert_delay = config.getfloat("rfid_insert_delay", 10.0, minval=0.)
         # Turn the slot first (SET_PRE_LOADING RUN), like stock BOX_INFO_REFRESH.
@@ -1560,9 +1564,10 @@ class afcCFS(afcUnit):
 
     def _check_filament_fault(self) -> None:
         """
-        While printing from one of this unit's lanes, pause if the print has used more than
-        fault_length of filament since the chain's buffer last changed state. A buffer stuck
-        full means the extruder isn't pulling (clog); stuck empty, the box isn't feeding.
+        While printing from one of this unit's lanes, pause if the print has used too much
+        filament since the chain's buffer last changed state: fault_length_stuck while it is
+        full or empty, fault_length while it is in middle. A buffer stuck full means the
+        extruder isn't pulling (clog); stuck empty, the box isn't feeding (tangle).
         """
         bus = self.bus
         state = self.buffer_state
@@ -1585,7 +1590,9 @@ class afcCFS(afcUnit):
             or lane.unit_obj is not self):
             return
         moved = used - bus.fault_filament_ref
-        if moved <= self.fault_length:
+        limit = (self.fault_length_stuck if state in (BUFFER_FULL, BUFFER_EMPTY)
+                 else self.fault_length)
+        if moved <= limit:
             return
         bus.fault_filament_ref = used
         msg = "AFC filament fault detected! Take necessary action."
