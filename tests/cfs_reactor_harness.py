@@ -47,7 +47,7 @@ from tests.conftest import MockAFC, MockConfig, MockPrinter  # noqa: E402
 
 from extras import AFC_CFS as P  # noqa: E402
 from extras.AFC_CFS import afcCFS  # noqa: E402
-from tests.cfs_helpers import CfsExtruder, CfsHub, complete_afc  # noqa: E402
+from tests.cfs_helpers import CfsExtruder, CfsHub  # noqa: E402
 from tests.cfs_sim import FakeCFS  # noqa: E402
 
 FAST = {
@@ -139,7 +139,7 @@ class Rig:
         self.sim = sim
         self.logger = Logger()
 
-        afc = complete_afc(MockAFC())
+        afc = MockAFC()
         afc.function.is_printing.return_value = False
         afc.function.in_print.return_value = False
         afc.tool_cut = True
