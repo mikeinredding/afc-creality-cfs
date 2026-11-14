@@ -2531,8 +2531,10 @@ class afcCFS(afcUnit):
           1. RETRUDE stage 0 (START) while the extruder gears still hold the
              filament: the box pulls the buffer to its empty limit. With the
              end already free it reels slack and fails RETRUDE_ERR2.
-          2. Extruder retract out of the gears (unload_retract_steps); the
-             now-empty buffer takes up the slack, so the gears don't click.
+          2. Extruder retract, just far enough to clear the gears
+             (unload_retract_steps). The box doesn't reel and the buffer
+             only takes up slack toward the toolhead, so retracting further
+             makes the gears click.
           3. RETRUDE stage 1 (FINISH): the box reels the slot back and
              answers when it has finished.
 
@@ -2555,8 +2557,9 @@ class afcCFS(afcUnit):
                          seconds=round(self.reactor.monotonic() - started, 2),
                          toolhead_sensor=self._toolhead_sensor(lane))
         # No reply in stage_timeout means the box may not have pulled the buffer back at all,
-        # so retracting out of the gears would push slack into a full buffer: stop. An error
-        # status is an answer (e.g. RETRUDE_ERR2, end already free), and FINISH can recover it.
+        # and the buffer can't take filament pushed back toward the box, so retracting out of
+        # the gears could jam: stop. An error status is an answer (e.g. RETRUDE_ERR2, end
+        # already free), and FINISH can recover it.
         if reply is None:
             return False, "box did not answer RETRUDE start"
         if not reply.ok:
