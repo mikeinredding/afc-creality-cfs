@@ -649,7 +649,7 @@ def sc_eject_part_fed(r):
     rig = Rig(r, sim)
     lane = rig.lane(1)
     rig.unit.connect()
-    sim.position = 610.0            # past the sensor (600), short of the gears (620)
+    sim.position = 610.0            # past the sensor (600), short of the gears (640)
     before = sim.toolhead_sensor
     t0 = r.monotonic()
     ok, detail = rig.unit.reel_back(lane)

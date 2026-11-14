@@ -108,7 +108,7 @@ your own printer (next section) instead of copying it.
 | `purge_spd` / `purge_length` | `6` / `140` | `6` / `140` |
 | `z_purge_move` | `False` | `False` |
 | `AFC_CFS_PARK` `park_x`, `park_y`, `min_z` | `148`, `225.3`, `30` | `185`, `305.5`, `30` |
-| `[AFC_CFS]` `unload_retract_steps` | default (`15:600, 45:1800`) | `12:300` |
+| `[AFC_CFS]` `unload_retract_steps` | `15:600, 45:1800` (stock `-60`; the `12:300` default isn't tested on a K1 yet) | default (`12:300`) |
 | `[stepper_y] position_max` | no change | `307.5` |
 
 On a K1 Max with a side-mounted probe, walk the toolhead slowly to the cutter and the chute at

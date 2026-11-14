@@ -1746,7 +1746,7 @@ class TestAfcCFSLoadCfsConfig:
             "stage5_reply_timeout": 2.0, "stage5_timeout": 60.0, "stage5_stall_time": 8.0,
             "stage5_stall_distance": 2.0, "prime1_length": 10.0, "prime1_speed": 300.0,
             "prime2_length": 5.0, "prime2_speed": 600.0, "stage7_arg": 3,
-            "clear_mode_after_load": False, "unload_retract_steps": [(15.0, 600.0), (45.0, 1800.0)],
+            "clear_mode_after_load": False, "unload_retract_steps": [(12.0, 300.0)],
             "unload_tip_wiggle": False, "unload_timeout": 30.0, "cutter_wait_time": 3.0,
             "cutter_require_trigger": True, "cutter_sensor_pin": None, "rfid_read": False,
             "rfid_insert_delay": 10.0, "rfid_spin": True, "rfid_busy_timeout": 150.0,
@@ -1973,7 +1973,7 @@ class TestAfcCFSTraceSettings:
             "stage5_timeout": 60.0, "stage5_stall_time": 8.0, "stage5_stall_distance": 2.0,
             "prime1_length": 10.0, "prime1_speed": 300.0, "prime2_length": 5.0,
             "prime2_speed": 600.0, "stage7_arg": 3, "clear_mode_after_load": False,
-            "unload_retract_steps": [(15.0, 600.0), (45.0, 1800.0)],
+            "unload_retract_steps": [(12.0, 300.0)],
             "unload_tip_wiggle": False, "unload_timeout": 30.0}
 
 
@@ -3853,16 +3853,13 @@ class TestAfcCFSRetractToBox:
         assert unit.box.keys() == RETRACT_START + [(1, P.RETRUDE_PROCESS, b"\x01\x01"),
                                                    (1, P.SET_BOX_MODE, b"\x00\x01")]
         assert unit.afc.move_e_pos.calls == [
-            ((-15.0, 10.0, "CFS unload retract 1"), {"wait_tool": True}),
-            ((-45.0, 30.0, "CFS unload retract 2"), {"wait_tool": True}),
+            ((-12.0, 5.0, "CFS unload retract 1"), {"wait_tool": True}),
         ]
         assert unit.trace.events == [
             ("retrude_start", {"lane": "lane1", "slot": "A", "status": "OK", "seconds": 0.0,
                                "toolhead_sensor": True}),
-            ("retract_step", {"lane": "lane1", "slot": "A", "step": 1, "mm": 15.0,
-                              "speed": 600.0, "toolhead_sensor": True}),
-            ("retract_step", {"lane": "lane1", "slot": "A", "step": 2, "mm": 45.0,
-                              "speed": 1800.0, "toolhead_sensor": True}),
+            ("retract_step", {"lane": "lane1", "slot": "A", "step": 1, "mm": 12.0,
+                              "speed": 300.0, "toolhead_sensor": True}),
             ("reel", {"lane": "lane1", "slot": "A", "done": True, "replies": ["OK", "OK"],
                       "seconds": 12.4, "toolhead_sensor": False}),
         ]
