@@ -1209,15 +1209,19 @@ class afcCFS(afcUnit):
         self.printer.register_event_handler("klippy:ready", self._cfs_handle_ready)
         self.printer.register_event_handler("klippy:disconnect", self._cfs_handle_disconnect)
 
+        # The first [AFC_CFS] in the config also answers when UNIT is left out, matching the
+        # UNIT default the web interface shows (its macro is created by the first unit).
+        first_unit = config.get_prefix_sections("AFC_CFS ")[0].get_name() == config.get_name()
         unit_option = {"UNIT": {"type": "string", "default": self.name}}
         for cmd, handler, extra in (
                 ("AFC_CFS_STATUS", self.cmd_AFC_CFS_STATUS, {}),
                 ("AFC_CFS_RECONNECT", self.cmd_AFC_CFS_RECONNECT, {}),
                 ("AFC_CFS_RAW", self.cmd_AFC_CFS_RAW, self.cmd_AFC_CFS_RAW_options),
                 ("AFC_CFS_TRACE", self.cmd_AFC_CFS_TRACE, {})):
-            self.function.register_mux_command(self.afc.show_macros, cmd, "UNIT", self.name,
-                                               handler, getattr(self, f"cmd_{cmd}_help"),
-                                               {**unit_option, **extra})
+            for value in ([self.name, None] if first_unit else [self.name]):
+                self.function.register_mux_command(self.afc.show_macros, cmd, "UNIT", value,
+                                                   handler, getattr(self, f"cmd_{cmd}_help"),
+                                                   {**unit_option, **extra})
         # Lane commands are registered now, while the config is read, like AFC's own (the
         # web interface macros can only be added then); the lanes attach at connect.
         for section in config.get_prefix_sections("AFC_lane "):

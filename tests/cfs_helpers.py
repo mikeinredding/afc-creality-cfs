@@ -329,11 +329,15 @@ class CfsConfig(MockConfig):
     """MockConfig that also lists [AFC_lane] sections (the CFS registers lane commands from them)."""
 
     def __init__(self, *args: Any, lane_units: Optional[Dict[str, str]] = None,
-                 **kwargs: Any) -> None:
+                 cfs_units: Optional[List[str]] = None, **kwargs: Any) -> None:
         super().__init__(*args, **kwargs)
         self._lane_units = lane_units or {}
+        self._cfs_units = cfs_units or [self._name.split()[-1]]   # this unit alone by default
 
     def get_prefix_sections(self, prefix: str) -> List[MockConfig]:
+        if prefix == "AFC_CFS ":
+            return [MockConfig(name=f"AFC_CFS {unit}", printer=self._printer)
+                    for unit in self._cfs_units]
         if prefix != "AFC_lane ":
             return []
         return [MockConfig(name=f"AFC_lane {lane}", printer=self._printer, values={"unit": unit})
