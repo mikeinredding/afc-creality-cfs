@@ -26,7 +26,7 @@ import jinja2
 import pytest
 
 from extras.AFC_lane import AFCLaneState, AFCMoveWarning
-from tests.conftest import MockConfig, MockLogger
+from tests.conftest import CommandError, MockConfig, MockLogger
 from extras import AFC_CFS as P
 from extras.AFC_CFS import (
     CFSBus,
@@ -36,7 +36,6 @@ from extras.AFC_CFS import (
     load_config_prefix,
 )
 from tests.cfs_helpers import (
-    CommandError,
     FakeMutex,
     RecTrace,
     Recorder,
@@ -1695,12 +1694,6 @@ def msgs(unit):
     return unit.logger.messages
 
 
-def tool_cmd(lane):
-    """The lane's T command as the PREP line shows it: AFC DEV's map_to_string(), or
-    AFC main's plain string map."""
-    return lane.map_to_string() if hasattr(lane, "map_to_string") else str(lane.map)
-
-
 # Construction and config
 
 class TestAfcCFSInit:
@@ -3051,7 +3044,7 @@ class TestAfcCFSSystemTest:
         unit.afc.function.TcmdAssign.assert_called_once_with(lane)
         assert lane._afc_prep_done is True
         assert unit._boot_wait_done is True
-        assert msgs(unit) == [("info", f"lane1 tool cmd: {tool_cmd(lane):3} "
+        assert msgs(unit) == [("info", f"lane1 tool cmd: {lane.map_to_string():3} "
                                        f"<span>READY</span>")]
         assert not unit.connect.called
         assert unit.box.sent == []
@@ -3085,7 +3078,7 @@ class TestAfcCFSSystemTest:
         assert unit._wait_for_box.call_count == 1
         assert unit.present_last["lane1"] is None
         assert unit.lane_not_ready.calls == [((lane,), {})]
-        assert msgs(unit) == [("info", f"lane1 tool cmd: {tool_cmd(lane):3} "
+        assert msgs(unit) == [("info", f"lane1 tool cmd: {lane.map_to_string():3} "
                                        f"<span class=error--text>CFS NOT RESPONDING</span>")]
         unit.system_Test(lane, 0, False, False)
         assert unit._wait_for_box.call_count == 1        # boot wait only once
@@ -3096,15 +3089,6 @@ class TestAfcCFSSystemTest:
         assert unit.system_Test(lane, 0, False, False) is True
         assert not unit._wait_for_box.called
         assert unit.apply_lane_state.called
-
-    def test_map_as_a_plain_string(self):
-        # AFCProject main keeps lane.map as a string, without map_to_string()
-        unit, lane = self._unit()
-        lane.map_to_string = None
-        lane.map = "T0"
-        lane.send_lane_data = Recorder()
-        unit.system_Test(lane, 0, False, False)
-        assert msgs(unit) == [("info", "lane1 tool cmd: T0  <span>READY</span>")]
 
 
 class TestAfcCFSEnsurePrintMode:

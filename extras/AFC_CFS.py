@@ -2092,11 +2092,7 @@ class afcCFS(afcUnit):
             self.afc.function.TcmdAssign(cur_lane)
         cur_lane.send_lane_data()
         cur_lane.do_enable(False)
-        # AFCProject main keeps lane.map as a string; newer AFC makes it a list
-        # with map_to_string(). Support both.
-        to_string = getattr(cur_lane, "map_to_string", None)
-        tcmd = to_string() if callable(to_string) else str(cur_lane.map)
-        self.logger.info(f"{cur_lane.name} tool cmd: {tcmd:3} {msg}")
+        self.logger.info(f"{cur_lane.name} tool cmd: {cur_lane.map_to_string():3} {msg}")
         cur_lane.set_afc_prep_done()
         return self.online
 
