@@ -50,7 +50,7 @@ from tests.conftest import MockAFC, MockConfig, MockPrinter  # noqa: E402
 
 from extras import AFC_CFS as P  # noqa: E402
 from extras.AFC_CFS import afcCFS  # noqa: E402
-from tests.cfs_helpers import CfsExtruder, CfsHub  # noqa: E402
+from tests.cfs_helpers import CfsConfig, CfsExtruder, CfsHub  # noqa: E402
 from tests.cfs_sim import FakeCFS  # noqa: E402
 
 FAST = {
@@ -183,7 +183,7 @@ class Rig:
         values.setdefault("hub", name)
         values.setdefault("extruder", "extruder")
         self.printer._objects.setdefault(f"AFC_hub {name}", CfsHub(name))
-        unit = afcCFS(MockConfig(name=f"AFC_CFS {name}", printer=self.printer, values=values))
+        unit = afcCFS(CfsConfig(name=f"AFC_CFS {name}", printer=self.printer, values=values))
         unit.handle_connect()
         unit.on_filament_insert = MagicMock()
         unit.on_filament_remove = MagicMock()
