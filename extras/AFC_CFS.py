@@ -34,8 +34,8 @@ import threading
 import time
 import traceback
 from enum import Enum
-from typing import (TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional, Set,
-                    Tuple)
+from typing import (TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple, Optional,
+                    Set, Tuple)
 
 import configfile
 
@@ -1209,15 +1209,53 @@ class afcCFS(afcUnit):
         self.printer.register_event_handler("klippy:ready", self._cfs_handle_ready)
         self.printer.register_event_handler("klippy:disconnect", self._cfs_handle_disconnect)
 
-        self.gcode.register_mux_command("AFC_CFS_STATUS", "UNIT", self.name,
-                                        self.cmd_AFC_CFS_STATUS, desc=self.cmd_AFC_CFS_STATUS_help)
-        self.gcode.register_mux_command("AFC_CFS_RECONNECT", "UNIT", self.name,
-                                        self.cmd_AFC_CFS_RECONNECT,
-                                        desc=self.cmd_AFC_CFS_RECONNECT_help)
-        self.gcode.register_mux_command("AFC_CFS_RAW", "UNIT", self.name,
-                                        self.cmd_AFC_CFS_RAW, desc=self.cmd_AFC_CFS_RAW_help)
-        self.gcode.register_mux_command("AFC_CFS_TRACE", "UNIT", self.name,
-                                        self.cmd_AFC_CFS_TRACE, desc=self.cmd_AFC_CFS_TRACE_help)
+        unit_option = {"UNIT": {"type": "string", "default": self.name}}
+        for cmd, handler, extra in (
+                ("AFC_CFS_STATUS", self.cmd_AFC_CFS_STATUS, {}),
+                ("AFC_CFS_RECONNECT", self.cmd_AFC_CFS_RECONNECT, {}),
+                ("AFC_CFS_RAW", self.cmd_AFC_CFS_RAW, self.cmd_AFC_CFS_RAW_options),
+                ("AFC_CFS_TRACE", self.cmd_AFC_CFS_TRACE, {})):
+            self.function.register_mux_command(self.afc.show_macros, cmd, "UNIT", self.name,
+                                               handler, getattr(self, f"cmd_{cmd}_help"),
+                                               {**unit_option, **extra})
+        # Lane commands are registered now, while the config is read, like AFC's own (the
+        # web interface macros can only be added then); the lanes attach at connect.
+        for section in config.get_prefix_sections("AFC_lane "):
+            if section.get("unit", "").split(":")[0] == self.name:
+                self._register_lane_commands(section.get_name().split()[-1])
+
+    def _register_lane_commands(self, lane_name: str) -> None:
+        """
+        Register this lane's AFC_CFS_* commands (and their web interface macros).
+
+        :param lane_name: name of an [AFC_lane] on this unit
+        """
+        lane_option = {"LANE": {"type": "string", "default": lane_name}}
+        for cmd, handler, extra in (
+                ("AFC_CFS_TOOL_LOAD", self.cmd_AFC_CFS_TOOL_LOAD, {}),
+                ("AFC_CFS_TOOL_UNLOAD", self.cmd_AFC_CFS_TOOL_UNLOAD, {}),
+                ("AFC_CFS_EJECT", self.cmd_AFC_CFS_EJECT, {}),
+                ("AFC_CFS_READ_TAG", self.cmd_AFC_CFS_READ_TAG, self.cmd_AFC_CFS_READ_TAG_options)):
+            self.function.register_mux_command(
+                self.afc.show_macros, cmd, "LANE", lane_name,
+                lambda gcmd, name=lane_name, handler=handler: self._run_lane_command(
+                    name, handler, gcmd),
+                getattr(self, f"cmd_{cmd}_help"), {**lane_option, **extra})
+
+    def _run_lane_command(self, lane_name: str, handler: Callable[[AFCLane, Any], None],
+                          gcmd: Any) -> None:
+        """
+        Run a lane command on the lane AFC attached at connect.
+
+        :param lane_name: lane the command was registered for
+        :param handler: cmd_AFC_CFS_* method taking (lane, gcmd)
+        :param gcmd: the command
+        """
+        lane = self.lanes.get(lane_name)
+        if lane is None:
+            error_str = f"CFS {self.name}: {lane_name} isn't attached to this unit"
+            raise gcmd.error(error_str)
+        handler(lane, gcmd)
 
     def _load_cfs_config(self, config: ConfigWrapper) -> None:
         """
@@ -1381,7 +1419,6 @@ class afcCFS(afcUnit):
         self._operation_depth = 0
         self._quiet_requests = False
         self._poll_timer = None
-        self._lane_commands: Set[str] = set()  # lanes whose AFC_CFS_* commands are registered
         self._offline_warned = False     # an "offline" warning is showing; say when it's back
         # Per lane: last slot presence seen (None = unknown) and the last load report
         self.present_last: Dict[str, Optional[bool]] = {}
@@ -2042,8 +2079,8 @@ class afcCFS(afcUnit):
 
     def _setup_lane(self, lane: AFCLane) -> None:
         """
-        Turn a plain [AFC_lane] section into a CFS lane: check it, set its load/unload commands and
-        register its commands.
+        Turn a plain [AFC_lane] section into a CFS lane: check it and set its load/unload
+        commands.
 
         :param lane: lane to act on
         """
@@ -2067,17 +2104,6 @@ class afcCFS(afcUnit):
             lane.custom_load_cmd = f"AFC_CFS_TOOL_LOAD LANE={lane.name}"
         if lane.custom_unload_cmd is None:
             lane.custom_unload_cmd = f"AFC_CFS_TOOL_UNLOAD LANE={lane.name}"
-        if lane.name in self._lane_commands:
-            return
-        self._lane_commands.add(lane.name)
-        for cmd, handler in (("AFC_CFS_TOOL_LOAD", self.cmd_AFC_CFS_TOOL_LOAD),
-                             ("AFC_CFS_TOOL_UNLOAD", self.cmd_AFC_CFS_TOOL_UNLOAD),
-                             ("AFC_CFS_EJECT", self.cmd_AFC_CFS_EJECT),
-                             ("AFC_CFS_READ_TAG", self.cmd_AFC_CFS_READ_TAG)):
-            self.gcode.register_mux_command(
-                cmd, "LANE", lane.name,
-                lambda gcmd, lane=lane, handler=handler: handler(lane, gcmd),
-                desc=getattr(self, f"cmd_{cmd}_help"))
 
     # Lane plumbing
 
@@ -2701,6 +2727,8 @@ class afcCFS(afcUnit):
             raise gcmd.error(error_str)
 
     cmd_AFC_CFS_READ_TAG_help = "Read a CFS lane's RFID tag and set its color/material"
+    cmd_AFC_CFS_READ_TAG_options = {"SPIN": {"type": "int", "default": 1},
+                                    "APPLY": {"type": "int", "default": 1}}
 
     def cmd_AFC_CFS_READ_TAG(self, lane: AFCLane, gcmd: Any) -> None:
         """
@@ -3362,6 +3390,8 @@ class afcCFS(afcUnit):
         gcmd.respond_info(f"CFS {self.name} trace: {self._trace_summary()}")
 
     cmd_AFC_CFS_RAW_help = "Send one raw CFS frame (debugging only)"
+    cmd_AFC_CFS_RAW_options = {"FN": {"type": "string", "default": ""},
+                               "DATA": {"type": "string", "default": ""}}
 
     def cmd_AFC_CFS_RAW(self, gcmd: GCodeCommand) -> None:
         """
