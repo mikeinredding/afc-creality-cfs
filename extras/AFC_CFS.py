@@ -1249,9 +1249,8 @@ class afcCFS(afcUnit):
 
     def _register_lane_commands(self, lane_name: str) -> None:
         """
-        Register this lane's AFC_CFS_* commands. EJECT and READ_TAG are offered in the web
-        interface; TOOL_LOAD/UNLOAD are AFC's custom load/unload commands (T macros do a tool
-        change).
+        Register this lane's AFC_CFS_* commands. Only EJECT is offered in the web interface;
+        TOOL_LOAD/UNLOAD are AFC's custom load/unload commands (T macros do a tool change).
 
         :param lane_name: name of an [AFC_lane] on this unit
         """
@@ -1260,8 +1259,7 @@ class afcCFS(afcUnit):
                 ("AFC_CFS_TOOL_LOAD", self.cmd_AFC_CFS_TOOL_LOAD, None),
                 ("AFC_CFS_TOOL_UNLOAD", self.cmd_AFC_CFS_TOOL_UNLOAD, None),
                 ("AFC_CFS_EJECT", self.cmd_AFC_CFS_EJECT, lane_option),
-                ("AFC_CFS_READ_TAG", self.cmd_AFC_CFS_READ_TAG,
-                 {**lane_option, **self.cmd_AFC_CFS_READ_TAG_options})):
+                ("AFC_CFS_READ_TAG", self.cmd_AFC_CFS_READ_TAG, None)):
             def run(gcmd: Any, handler: Callable[[AFCLane, Any], None] = handler) -> None:
                 """
                 Run the command on this lane.
@@ -2852,8 +2850,6 @@ class afcCFS(afcUnit):
             raise gcmd.error(error_str)
 
     cmd_AFC_CFS_READ_TAG_help = "Read a CFS lane's RFID tag and set its color/material"
-    cmd_AFC_CFS_READ_TAG_options = {"SPIN": {"type": "int", "default": 1},
-                                    "APPLY": {"type": "int", "default": 1}}
 
     def cmd_AFC_CFS_READ_TAG(self, lane: AFCLane, gcmd: Any) -> None:
         """

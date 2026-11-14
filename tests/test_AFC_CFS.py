@@ -3198,21 +3198,17 @@ class TestAfcCFSLaneCommands:
     def test_registered_at_config_time_for_this_unit_only(self):
         unit, web, plain = self._unit()
         show = unit.afc.show_macros
-        # EJECT and READ_TAG in the web interface; TOOL_LOAD/UNLOAD are AFC's custom commands
-        assert [c[0][:4] for c in web] == [(show, "AFC_CFS_EJECT", "LANE", "lane1"),
-                                           (show, "AFC_CFS_READ_TAG", "LANE", "lane1")]
-        assert [c[0][5] for c in web] == [
-            "Reel a CFS lane's filament back into the box (box motors only)",
-            "Read a CFS lane's RFID tag and set its color/material"]
-        assert [c[0][6] for c in web] == [
-            self.LANE_OPT,
-            {**self.LANE_OPT, "SPIN": {"type": "int", "default": 1},
-             "APPLY": {"type": "int", "default": 1}}]
+        # Only EJECT in the web interface; the rest are console commands
+        assert [c[0][:4] for c in web] == [(show, "AFC_CFS_EJECT", "LANE", "lane1")]
+        assert [c[0][5:] for c in web] == [
+            ("Reel a CFS lane's filament back into the box (box motors only)", self.LANE_OPT)]
         assert [(c[0][:3], c[1]) for c in plain] == [
             (("AFC_CFS_TOOL_LOAD", "LANE", "lane1"),
              {"desc": "Load a CFS lane into the toolhead"}),
             (("AFC_CFS_TOOL_UNLOAD", "LANE", "lane1"),
-             {"desc": "Unload a CFS lane from the toolhead back to the box"})]
+             {"desc": "Unload a CFS lane from the toolhead back to the box"}),
+            (("AFC_CFS_READ_TAG", "LANE", "lane1"),
+             {"desc": "Read a CFS lane's RFID tag and set its color/material"})]
 
     def test_commands_run_on_the_attached_lane(self):
         unit, _, _ = self._unit()
@@ -3223,9 +3219,11 @@ class TestAfcCFSLaneCommands:
             handlers[name] = Recorder()
             setattr(unit, f"cmd_AFC_CFS_{name}", handlers[name])
         unit._register_lane_commands("lane1")
-        runs = ([c[0][3] for c in unit.gcode.register_mux_command.calls[-2:]]
-                + [c[0][4] for c in unit.function.register_mux_command.calls[-2:]])
-        for run, name in zip(runs, handlers):
+        plain = [c[0][3] for c in unit.gcode.register_mux_command.calls[-3:]]
+        web = [c[0][4] for c in unit.function.register_mux_command.calls[-1:]]
+        runs = dict(zip(("TOOL_LOAD", "TOOL_UNLOAD", "READ_TAG"), plain), EJECT=web[0])
+        for name in handlers:
+            run = runs[name]
             run("gcmd")
             assert handlers[name].calls == [((lane, "gcmd"), {})]
 
