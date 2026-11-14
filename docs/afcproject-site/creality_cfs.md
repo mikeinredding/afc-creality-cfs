@@ -59,8 +59,8 @@ Tested on a K1 with one box and a K1 Max with two boxes, both on Simple AF.
   the box thinks it has lost contact with the printer, which can happen to one box while
   another box on the chain is busy for a long time (e.g. reading an untagged RFID spool). It
   clears as soon as the printer next sends that box a command.
-- `AFC_CFS_STATUS`, `AFC_CFS_EJECT` and `AFC_CFS_READ_TAG` appear as macros in Mainsail and
-  Fluidd (with AFC's `show_macros`). The other CFS commands are typed in the console.
+- `AFC_CFS_STATUS` and `AFC_CFS_EJECT` appear as macros in Mainsail and Fluidd (with AFC's
+  `show_macros`). The other CFS commands are typed in the console.
 - Routine load and unload steps go to `AFC.log` only. Set `debug: True` in `[AFC]` to see them
   in the console as well.
 
