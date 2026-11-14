@@ -1710,16 +1710,24 @@ class TestAfcCFSInit:
         assert printer._event_handlers["klippy:disconnect"][-1] == unit._cfs_handle_disconnect
         unit_opt = {"UNIT": {"type": "string", "default": "CFS_1"}}
         show = printer._afc.show_macros
-        assert printer._afc.function.register_mux_command.calls == [
-            ((show, "AFC_CFS_STATUS", "UNIT", "CFS_1", unit.cmd_AFC_CFS_STATUS,
-              unit.cmd_AFC_CFS_STATUS_help, unit_opt), {}),
-            ((show, "AFC_CFS_RECONNECT", "UNIT", "CFS_1", unit.cmd_AFC_CFS_RECONNECT,
-              unit.cmd_AFC_CFS_RECONNECT_help, unit_opt), {}),
-            ((show, "AFC_CFS_RAW", "UNIT", "CFS_1", unit.cmd_AFC_CFS_RAW,
-              unit.cmd_AFC_CFS_RAW_help, {**unit_opt, **unit.cmd_AFC_CFS_RAW_options}), {}),
-            ((show, "AFC_CFS_TRACE", "UNIT", "CFS_1", unit.cmd_AFC_CFS_TRACE,
-              unit.cmd_AFC_CFS_TRACE_help, unit_opt), {}),
-        ]
+        expected = []
+        for cmd, extra in (("STATUS", {}), ("RECONNECT", {}),
+                           ("RAW", unit.cmd_AFC_CFS_RAW_options), ("TRACE", {})):
+            for value in ("CFS_1", None):   # the first CFS also answers without UNIT
+                expected.append(((show, f"AFC_CFS_{cmd}", "UNIT", value,
+                                  getattr(unit, f"cmd_AFC_CFS_{cmd}"),
+                                  getattr(unit, f"cmd_AFC_CFS_{cmd}_help"),
+                                  {**unit_opt, **extra}), {}))
+        assert printer._afc.function.register_mux_command.calls == expected
+
+    def test_only_the_first_unit_is_the_unit_default(self):
+        printer = make_printer()
+        printer._afc.function.register_mux_command = Recorder()
+        printer._objects["AFC_hub CFS_2"] = object()
+        afcCFS(CfsConfig(name="AFC_CFS CFS_2", printer=printer, cfs_units=["CFS_1", "CFS_2"],
+                         values={"serial": SERIAL, "hub": "CFS_2", "extruder": "extruder"}))
+        assert [c[0][3] for c in printer._afc.function.register_mux_command.calls] == [
+            "CFS_2"] * 4
 
     def test_type_can_be_set(self):
         assert make_unit(values={"type": "CFS2"}).type == "CFS2"
