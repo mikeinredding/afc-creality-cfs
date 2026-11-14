@@ -274,7 +274,7 @@ The Max's `box.cfg` differs from the K1's; these worked on a K1 Max with the CFS
 |---|---|---|
 | Cutter | `pin_loc_xy: 38, 300`, `cut_move_dist: 7` | arm touches the pin at Y300, the switch fires at Y306 |
 | Y travel | `[stepper_y] position_max: 307.5` (printer.cfg, about line 99) | Simple AF sets 306, which ends the cut exactly at the trigger; 307.5 is Creality's own CFS value (`gcode_position_max: 295` kept normal moves lower) |
-| Unload retract | `unload_retract_steps: 12:300` | only ~10 mm from the cutter to the gears; stock's `Tn_retrude: -20` (`10:600, 10:1800`) makes the gears click |
+| Unload retract | `unload_retract_steps: 12:300` (the default) | only ~10 mm from the cutter to the gears; stock's `Tn_retrude: -20` (`10:600, 10:1800`) makes the gears click |
 | Park / purge | X185 Y305.5, Z30; `safe_y: 291.5` | `AFC_CFS_PARK`, `_AFC_POOP_VARS`, `_AFC_PARK_VARS` |
 | Purge | `purge_spd: 6`, `purge_length: 140`, `tool_load_speed: 10` | 0.4 mm nozzle |
 | Napkin pad | X71.5–111.5 at Y302.5 → `x_left: 75.5`, `x_right: 107.5`, `y: 302.5`, `safe_y: 291.5` | in `_AFC_CFS_PAD_VARS`; the template's `safe_y: 215` is the K1's |

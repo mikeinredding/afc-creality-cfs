@@ -1303,7 +1303,7 @@ class afcCFS(afcUnit):
         # pulling out of the gears before the box reels. 60mm total like stock's
         # Tn_retrude -60; the first 15mm slower while the cut end is still warm.
         self.unload_retract_steps = self._parse_steps(config.get(
-            "unload_retract_steps", "15:600, 45:1800"))
+            "unload_retract_steps", "12:300"))
         # Optional tip-forming wiggle before retracting. Not needed with a cutter.
         self.unload_tip_wiggle = config.getboolean("unload_tip_wiggle", False)
         self.unload_timeout = config.getfloat("unload_timeout", 30.0, minval=1.)
