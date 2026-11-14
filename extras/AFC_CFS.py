@@ -2142,17 +2142,6 @@ class afcCFS(afcUnit):
     # unit's AFC_CFS_TOOL_LOAD / AFC_CFS_TOOL_UNLOAD, set as each lane's
     # custom_load_cmd / custom_unload_cmd at connect.
     #
-    # Load follows the stock sequence tomaspakosta/k1c-cfs-klipper validated on
-    # hardware: connection motor -> tighten -> EXTRUDE_PROCESS stages 0, 4, 5
-    # (until the toolhead sensor trips) -> prime -> stage 6 -> prime -> stage
-    # 7 -> mark slot PRINT. Unload cuts, runs RETRUDE start, retracts the
-    # extruder, then RETRUDE finish reels the slot back.
-
-    cmd_AFC_CFS_TOOL_LOAD_help = "Load a CFS lane into the toolhead"
-    cmd_AFC_CFS_TOOL_UNLOAD_help = "Unload a CFS lane from the toolhead back to the box"
-    cmd_AFC_CFS_EJECT_help = "Reel a CFS lane's filament back into the box (box motors only)"
-    cmd_AFC_CFS_READ_TAG_help = "Read a CFS lane's RFID tag and set its color/material"
-
     def _setup_lanes(self) -> None:
         """
         At connect, once AFC has attached this unit's lanes.
@@ -2490,6 +2479,13 @@ class afcCFS(afcUnit):
             return False, "toolhead sensor cleared after the handoff"
         return True, "loaded"
 
+    # Load follows the stock sequence tomaspakosta/k1c-cfs-klipper validated on
+    # hardware: connection motor -> tighten -> EXTRUDE_PROCESS stages 0, 4, 5
+    # (until the toolhead sensor trips) -> prime -> stage 6 -> prime -> stage
+    # 7 -> mark slot PRINT. Unload cuts, runs RETRUDE start, retracts the
+    # extruder, then RETRUDE finish reels the slot back.
+    cmd_AFC_CFS_TOOL_LOAD_help = "Load a CFS lane into the toolhead"
+
     def cmd_AFC_CFS_TOOL_LOAD(self, lane: AFCLane, gcmd: Any) -> None:
         """
         Load this CFS lane to the nozzle. AFC calls this through custom_load_cmd
@@ -2498,6 +2494,12 @@ class afcCFS(afcUnit):
         Usage
         -----
         `AFC_CFS_TOOL_LOAD LANE=<lane>`
+
+        Example
+        -------
+        ```
+        AFC_CFS_TOOL_LOAD LANE=lane1
+        ```
         """
         self.wait_for_tag_reads()   # a tag read keeps the box busy; finish it first
         started = self.reactor.monotonic()
@@ -2704,6 +2706,8 @@ class afcCFS(afcUnit):
                            f"finish {finish_status})")
         return True, f"reeled back in {reel_seconds:.1f}s"
 
+    cmd_AFC_CFS_TOOL_UNLOAD_help = "Unload a CFS lane from the toolhead back to the box"
+
     def cmd_AFC_CFS_TOOL_UNLOAD(self, lane: AFCLane, gcmd: Any) -> None:
         """
         Cut and unload this CFS lane back to the box. AFC calls this through
@@ -2712,6 +2716,12 @@ class afcCFS(afcUnit):
         Usage
         -----
         `AFC_CFS_TOOL_UNLOAD LANE=<lane>`
+
+        Example
+        -------
+        ```
+        AFC_CFS_TOOL_UNLOAD LANE=lane1
+        ```
         """
         self.wait_for_tag_reads()   # a tag read keeps the box busy; finish it first
         started = self.reactor.monotonic()
@@ -2770,6 +2780,8 @@ class afcCFS(afcUnit):
         except Exception as e:
             self.logger.warning(f"CFS {lane.name}: could not record tool state: {e}")
 
+    cmd_AFC_CFS_EJECT_help = "Reel a CFS lane's filament back into the box (box motors only)"
+
     def cmd_AFC_CFS_EJECT(self, lane: AFCLane, gcmd: Any) -> None:
         """
         Reel this lane's filament back into the box using only the box
@@ -2779,6 +2791,12 @@ class afcCFS(afcUnit):
         Usage
         -----
         `AFC_CFS_EJECT LANE=<lane>`
+
+        Example
+        -------
+        ```
+        AFC_CFS_EJECT LANE=lane1
+        ```
         """
         self.wait_for_tag_reads()
         if (not self.online
@@ -2791,6 +2809,8 @@ class afcCFS(afcUnit):
             error_str = f"CFS {lane.name}: eject did not finish cleanly: {detail}"
             raise gcmd.error(error_str)
 
+    cmd_AFC_CFS_READ_TAG_help = "Read a CFS lane's RFID tag and set its color/material"
+
     def cmd_AFC_CFS_READ_TAG(self, lane: AFCLane, gcmd: Any) -> None:
         """
         Read this lane's RFID tag (Creality format) and set the lane's color,
@@ -2798,11 +2818,17 @@ class afcCFS(afcUnit):
         an ID. Not during a print or with the lane loaded. Without a tag the
         box can be busy for about a minute.
 
+        SPIN=0 skips turning the slot first; APPLY=0 only reports the tag.
+
         Usage
         -----
         `AFC_CFS_READ_TAG LANE=<lane> [SPIN=<0|1>] [APPLY=<0|1>]`
 
-        SPIN=0 skips turning the slot first; APPLY=0 only reports the tag.
+        Example
+        -------
+        ```
+        AFC_CFS_READ_TAG LANE=lane1 APPLY=0
+        ```
         """
         slot = P.slot_letter(lane.index)
         if (not self.online
@@ -3299,9 +3325,18 @@ class afcCFS(afcUnit):
 
     def cmd_AFC_CFS_STATUS(self, gcmd: GCodeCommand) -> None:
         """
+        Query this CFS box and report its state: version, filament per slot,
+        buffer, measuring wheel, cutter sensor, link counters and lanes.
+
         Usage
         -----
         `AFC_CFS_STATUS UNIT=<unit>`
+
+        Example
+        -------
+        ```
+        AFC_CFS_STATUS UNIT=CFS_1
+        ```
         """
         with self.operation():
             if not self.online:
