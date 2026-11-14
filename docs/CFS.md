@@ -41,11 +41,13 @@ push the rest of `tool_stn`.
 **Unload:** `AFC_CUT` (verified against `cutter_sensor_pin` if set) → park / form
 tip per AFC settings → box idle, pre-loading off → `RETRUDE_PROCESS <slot>` stage 0
 (START) *while the extruder gears still hold the filament* — the box pulls the
-buffer to its empty limit → retract the extruder (`unload_retract_steps`, 60 mm total
-by default, like stock's `Tn_retrude -60`) into the now-slack buffer → stage 1
-(FINISH): the box reels the slot back and answers when it has finished → toolhead
-sensor must be clear. Pulling out of the gears before START makes the box reel slack
-and fail with `RETRUDE_ERR2`; pulling while the buffer is full makes the gears click.
+buffer to its empty limit → retract the extruder just far enough to clear the gears
+(`unload_retract_steps`) → stage 1 (FINISH): the box reels the slot back and answers
+when it has finished → toolhead sensor must be clear. Pulling out of the gears before
+START makes the box reel slack and fail with `RETRUDE_ERR2`. The box doesn't reel
+during the retract and the buffer only takes up slack toward the toolhead, so a
+retract longer than the cutter-to-gears distance makes the gears click (measured on a
+K1 Max: 20 mm clicked at any speed, 12 mm was clean).
 If START fails anyway, FINISH is still sent (it reels the slot back on its own).
 On the K1-series CFS toolhead the cutter sits below the extruder gears, just
 above the nozzle (~30 mm from the gears, Creality's `buffer_empty_len`), and the
@@ -272,7 +274,7 @@ The Max's `box.cfg` differs from the K1's; these worked on a K1 Max with the CFS
 |---|---|---|
 | Cutter | `pin_loc_xy: 38, 300`, `cut_move_dist: 7` | arm touches the pin at Y300, the switch fires at Y306 |
 | Y travel | `[stepper_y] position_max: 307.5` (printer.cfg, about line 99) | Simple AF sets 306, which ends the cut exactly at the trigger; 307.5 is Creality's own CFS value (`gcode_position_max: 295` kept normal moves lower) |
-| Unload retract | `unload_retract_steps: 10:600, 10:1800` | stock `Tn_retrude: -20`; only 10 mm from the cutter to the gears (`buffer_empty_len`) |
+| Unload retract | `unload_retract_steps: 12:300` (the default) | only ~10 mm from the cutter to the gears; stock's `Tn_retrude: -20` (`10:600, 10:1800`) makes the gears click |
 | Park / purge | X185 Y305.5, Z30; `safe_y: 291.5` | `AFC_CFS_PARK`, `_AFC_POOP_VARS`, `_AFC_PARK_VARS` |
 | Purge | `purge_spd: 6`, `purge_length: 140`, `tool_load_speed: 10` | 0.4 mm nozzle |
 | Napkin pad | X71.5–111.5 at Y302.5 → `x_left: 75.5`, `x_right: 107.5`, `y: 302.5`, `safe_y: 291.5` | in `_AFC_CFS_PAD_VARS`; the template's `safe_y: 215` is the K1's |

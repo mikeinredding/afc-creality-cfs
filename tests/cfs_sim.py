@@ -30,7 +30,7 @@ from extras import AFC_CFS as P
 
 class FakeCFS:
     def __init__(self, material_mask=0b0011, addressed=True, addr=1,
-                 path_len=600.0, grip_len=620.0, feed_per_poll=60.0,
+                 path_len=600.0, grip_len=640.0, feed_per_poll=60.0,
                  reply_delay=0.02, stage5_delay=0.15, stage_delays=None,
                  stage0_feed=0.0, reel_delay=0.0, uid=None, standalone=True):
         self.addr = addr if addressed else None

@@ -1755,7 +1755,7 @@ class TestAfcCFSLoadCfsConfig:
             "stage5_reply_timeout": 2.0, "stage5_timeout": 60.0, "stage5_stall_time": 8.0,
             "stage5_stall_distance": 2.0, "prime1_length": 10.0, "prime1_speed": 300.0,
             "prime2_length": 5.0, "prime2_speed": 600.0, "stage7_arg": 3,
-            "clear_mode_after_load": False, "unload_retract_steps": [(15.0, 600.0), (45.0, 1800.0)],
+            "clear_mode_after_load": False, "unload_retract_steps": [(12.0, 300.0)],
             "unload_tip_wiggle": False, "unload_timeout": 30.0, "cutter_wait_time": 3.0,
             "cutter_require_trigger": True, "cutter_sensor_pin": None, "rfid_read": False,
             "rfid_insert_delay": 10.0, "rfid_spin": True, "rfid_busy_timeout": 150.0,
@@ -1990,7 +1990,7 @@ class TestAfcCFSTraceSettings:
             "stage5_timeout": 60.0, "stage5_stall_time": 8.0, "stage5_stall_distance": 2.0,
             "prime1_length": 10.0, "prime1_speed": 300.0, "prime2_length": 5.0,
             "prime2_speed": 600.0, "stage7_arg": 3, "clear_mode_after_load": False,
-            "unload_retract_steps": [(15.0, 600.0), (45.0, 1800.0)],
+            "unload_retract_steps": [(12.0, 300.0)],
             "unload_tip_wiggle": False, "unload_timeout": 30.0}
 
 
@@ -3826,9 +3826,10 @@ class TestAfcCFSCmdToolLoad:
         unit, lane = self._unit()
         unit.afc.park = True
         unit.afc.park_cmd = "AFC_CFS_PARK"
-        unit.cmd_AFC_CFS_TOOL_LOAD(lane, gcmd())
-        unit.afc.gcode.run_script_from_command.assert_called_once_with(
-            "AFC_CFS_PARK EXTRUDER=extruder")
+        unit.afc.run_script = Recorder()
+        cmd = gcmd()
+        unit.cmd_AFC_CFS_TOOL_LOAD(lane, cmd)
+        assert unit.afc.run_script.calls == [(("AFC_CFS_PARK EXTRUDER=extruder", cmd), {})]
 
     def test_park_on_without_a_macro(self):
         unit, lane = self._unit()
@@ -3974,13 +3975,15 @@ class TestAfcCFSRunCutterSequence:
     def test_cutting_off(self):
         unit, lane = self._unit()
         unit.afc.tool_cut = False
-        assert unit._run_cutter_sequence(lane) is None
+        assert unit._run_cutter_sequence(lane, gcmd()) is None
         assert not unit.afc.gcode.run_script_from_command.called
 
     def test_no_switch_cut_once_unverified(self):
         unit, lane = self._unit()
-        assert unit._run_cutter_sequence(lane) is None
-        unit.afc.gcode.run_script_from_command.assert_called_once_with("AFC_CUT EXTRUDER=extruder")
+        unit.afc.run_script = Recorder()
+        cmd = gcmd()
+        assert unit._run_cutter_sequence(lane, cmd) is None
+        assert unit.afc.run_script.calls == [(("AFC_CUT EXTRUDER=extruder", cmd), {})]
         assert lane.extruder_obj.estats.increase_cut_total.call_count == 1
         assert unit.trace.events == [("cut", {"lane": "lane1", "slot": "A", "attempt": 1,
                                               "verified": False})]
@@ -3989,7 +3992,7 @@ class TestAfcCFSRunCutterSequence:
     def test_switch_fired_and_released(self):
         unit, lane = self._unit({"cutter_sensor_pin": "PA1"})
         self._cuts(unit, (1, 0))
-        assert unit._run_cutter_sequence(lane) is None
+        assert unit._run_cutter_sequence(lane, gcmd()) is None
         assert unit.afc.toolhead.wait_moves.called
         assert self._cut_events(unit) == [("cut", {"lane": "lane1", "slot": "A", "attempt": 1,
                                               "verified": True, "fired": True, "released": True,
@@ -4001,14 +4004,14 @@ class TestAfcCFSRunCutterSequence:
         self._cuts(unit, (1,))
         unit.reactor.on_pause.append(
             lambda now: unit._cutter_callback(0.0, 0) if len(unit.reactor.pauses) == 3 else None)
-        assert unit._run_cutter_sequence(lane) is None
+        assert unit._run_cutter_sequence(lane, gcmd()) is None
         assert self._cut_events(unit)[-1][1]["released"] is True
 
     def test_switch_never_released(self):
         unit, lane = self._unit({"cutter_sensor_pin": "PA1", "cutter_wait_time": 0.2})
         self._cuts(unit, (1,))
         reason = "cutter sensor did not release after cutting"
-        assert unit._run_cutter_sequence(lane) == reason
+        assert unit._run_cutter_sequence(lane, gcmd()) == reason
         # load_attempts (2) + 1 cuts, each one warned
         assert msgs(unit) == [("warning", f"CFS lane1: cut {n} not confirmed: {reason}")
                               for n in (1, 2, 3)]
@@ -4018,18 +4021,18 @@ class TestAfcCFSRunCutterSequence:
         unit, lane = self._unit({"cutter_sensor_pin": "PA1"})
         reason = ("cutter switch never fired during the cut (blade did not reach the end of its "
                   "travel; check pin_loc_xy / cut_move_dist)")
-        assert unit._run_cutter_sequence(lane) == reason
+        assert unit._run_cutter_sequence(lane, gcmd()) == reason
         assert msgs(unit)[0] == ("warning", f"CFS lane1: cut 1 not confirmed: {reason}")
 
     def test_fired_on_a_retry(self):
         unit, lane = self._unit({"cutter_sensor_pin": "PA1"})
         self._cuts(unit, (), (1, 0))
-        assert unit._run_cutter_sequence(lane) is None
+        assert unit._run_cutter_sequence(lane, gcmd()) is None
         assert [e[1]["fired"] for e in self._cut_events(unit)] == [False, True]
 
     def test_trigger_not_required(self):
         unit, lane = self._unit({"cutter_sensor_pin": "PA1", "cutter_require_trigger": False})
-        assert unit._run_cutter_sequence(lane) is None
+        assert unit._run_cutter_sequence(lane, gcmd()) is None
         assert self._cut_events(unit)[-1][1]["fired"] is False
 
     def test_uses_the_chains_switch(self):
@@ -4038,28 +4041,29 @@ class TestAfcCFSRunCutterSequence:
         b, lane = self._unit({"box_addr": 2}, printer=printer, name="CFS_2")
         b.cutter_source = a
         self._cuts(b, (1, 0))
-        assert b._run_cutter_sequence(lane) is None
+        assert b._run_cutter_sequence(lane, gcmd()) is None
         assert a.cutter_trigger_count == 1
 
 
 class TestAfcCFSRunPostCutMacros:
     def test_nothing_enabled(self):
         unit, (lane,) = ready_unit()
-        unit._run_post_cut_macros(lane)
+        unit._run_post_cut_macros(lane, gcmd())
         assert not unit.afc.gcode.run_script_from_command.called
 
     def test_park(self):
         unit, (lane,) = ready_unit()
         unit.afc.park = True
         unit.afc.park_cmd = "AFC_CFS_PARK"
-        unit._run_post_cut_macros(lane)
-        unit.afc.gcode.run_script_from_command.assert_called_once_with(
-            "AFC_CFS_PARK EXTRUDER=extruder")
+        unit.afc.run_script = Recorder()
+        cmd = gcmd()
+        unit._run_post_cut_macros(lane, cmd)
+        assert unit.afc.run_script.calls == [(("AFC_CFS_PARK EXTRUDER=extruder", cmd), {})]
 
     def test_park_without_macro(self):
         unit, (lane,) = ready_unit()
         unit.afc.park = True
-        unit._run_post_cut_macros(lane)
+        unit._run_post_cut_macros(lane, gcmd())
         assert not unit.afc.gcode.run_script_from_command.called
 
     def test_afc_tip_forming(self):
@@ -4068,7 +4072,7 @@ class TestAfcCFSRunPostCutMacros:
         unit.afc.form_tip_cmd = "AFC"
         tip = type("Tip", (), {"tip_form": Recorder()})()
         unit.printer._objects["AFC_form_tip"] = tip
-        unit._run_post_cut_macros(lane)
+        unit._run_post_cut_macros(lane, gcmd())
         assert tip.tip_form.called
         assert not unit.afc.gcode.run_script_from_command.called
 
@@ -4076,13 +4080,15 @@ class TestAfcCFSRunPostCutMacros:
         unit, (lane,) = ready_unit()
         unit.afc.form_tip = True
         unit.afc.form_tip_cmd = "MY_TIP"
-        unit._run_post_cut_macros(lane)
-        unit.afc.gcode.run_script_from_command.assert_called_once_with("MY_TIP")
+        unit.afc.run_script = Recorder()
+        cmd = gcmd()
+        unit._run_post_cut_macros(lane, cmd)
+        assert unit.afc.run_script.calls == [(("MY_TIP", cmd), {})]
 
     def test_tip_forming_without_macro(self):
         unit, (lane,) = ready_unit()
         unit.afc.form_tip = True
-        unit._run_post_cut_macros(lane)
+        unit._run_post_cut_macros(lane, gcmd())
         assert not unit.afc.gcode.run_script_from_command.called
 
 
@@ -4111,16 +4117,13 @@ class TestAfcCFSRetractToBox:
         assert unit.box.keys() == RETRACT_START + [(1, P.RETRUDE_PROCESS, b"\x01\x01"),
                                                    (1, P.SET_BOX_MODE, b"\x00\x01")]
         assert unit.afc.move_e_pos.calls == [
-            ((-15.0, 10.0, "CFS unload retract 1"), {"wait_tool": True}),
-            ((-45.0, 30.0, "CFS unload retract 2"), {"wait_tool": True}),
+            ((-12.0, 5.0, "CFS unload retract 1"), {"wait_tool": True}),
         ]
         assert unit.trace.events == [
             ("retrude_start", {"lane": "lane1", "slot": "A", "status": "OK", "seconds": 0.0,
                                "toolhead_sensor": True}),
-            ("retract_step", {"lane": "lane1", "slot": "A", "step": 1, "mm": 15.0,
-                              "speed": 600.0, "toolhead_sensor": True}),
-            ("retract_step", {"lane": "lane1", "slot": "A", "step": 2, "mm": 45.0,
-                              "speed": 1800.0, "toolhead_sensor": True}),
+            ("retract_step", {"lane": "lane1", "slot": "A", "step": 1, "mm": 12.0,
+                              "speed": 300.0, "toolhead_sensor": True}),
             ("reel", {"lane": "lane1", "slot": "A", "done": True, "replies": ["OK", "OK"],
                       "seconds": 12.4, "toolhead_sensor": False}),
         ]
@@ -4199,12 +4202,13 @@ class TestAfcCFSCmdToolUnload:
     def test_unloads(self):
         unit, lane = self._unit()
         lane._load_state = True
-        unit.cmd_AFC_CFS_TOOL_UNLOAD(lane, gcmd())
+        cmd = gcmd()
+        unit.cmd_AFC_CFS_TOOL_UNLOAD(lane, cmd)
         assert unit.wait_for_tag_reads.called
         assert lane.select_lane.called and lane.disable_buffer.called
         unit.afc._check_extruder_temp.assert_called_once_with(lane)
-        assert unit._run_cutter_sequence.calls == [((lane,), {})]
-        assert unit._run_post_cut_macros.calls == [((lane,), {})]
+        assert unit._run_cutter_sequence.calls == [((lane, cmd), {})]
+        assert unit._run_post_cut_macros.calls == [((lane, cmd), {})]
         assert lane._load_state is False
         assert unit._mark_tool_state.calls == [((lane,), {"loaded": False})]
         assert unit.trace.events == [
@@ -4614,6 +4618,7 @@ class TestAfcCFSRfidTick:
     def test_reads_and_applies_the_tag(self):
         unit, (lane, _) = self._unit()
         unit.read_tag = Recorder(result=tag())
+        unit.afc.gcode.get_mutex().test.return_value = False   # timer: mutex not held
         unit._rfid_queue = {"lane1": 990.0}
         assert unit._rfid_tick(1000.0) == unit.reactor.NEVER
         assert unit.read_tag.calls == [((lane,), {})]
@@ -4746,37 +4751,44 @@ class TestAfcCFSTagSummary:
 class TestAfcCFSApplyTag:
     def _unit(self):
         unit, (lane,) = rfid_unit()
-        return unit, lane, Recorder()
+        unit.afc.run_script = Recorder()
+        return unit, lane, unit.afc.run_script
 
     def test_color_material_weight(self):
         unit, lane, run = self._unit()
-        cmds = unit.apply_tag(lane, tag(), run)
+        cmd = gcmd()
+        cmds = unit.apply_tag(lane, tag(), cmd)
         assert cmds == ["SET_COLOR LANE=lane1 COLOR=E7A18E",
                         "SET_MATERIAL LANE=lane1 MATERIAL=PLA",
                         "SET_WEIGHT LANE=lane1 WEIGHT=1000"]
-        assert [c[0][0] for c in run.calls] == cmds
+        assert run.calls == [((c, cmd), {}) for c in cmds]
+
+    def test_timer_has_no_command(self):
+        unit, lane, run = self._unit()
+        cmds = unit.apply_tag(lane, tag())
+        assert run.calls == [((c, None), {}) for c in cmds]
         assert msgs(unit) == []
 
     def test_spoolman_id_wins(self):
         unit, lane, run = self._unit()
         unit.afc.spoolman = "http://spoolman"
-        assert unit.apply_tag(lane, tag(spool_id=7), run) == [
+        assert unit.apply_tag(lane, tag(spool_id=7)) == [
             "SET_SPOOL_ID LANE=lane1 SPOOL_ID=7"]
 
     def test_spool_id_without_spoolman(self):
         unit, lane, run = self._unit()
-        assert unit.apply_tag(lane, tag(spool_id=7), run)[0] == "SET_COLOR LANE=lane1 COLOR=E7A18E"
+        assert unit.apply_tag(lane, tag(spool_id=7))[0] == "SET_COLOR LANE=lane1 COLOR=E7A18E"
 
     def test_lane_already_has_a_spool(self):
         unit, lane, run = self._unit()
         lane.spool_id = 1
-        assert unit.apply_tag(lane, tag(), run) == []
+        assert unit.apply_tag(lane, tag()) == []
         assert not run.called
         assert msgs(unit) == [("info", "CFS lane1: lane has Spoolman spool 1; tag not applied")]
 
     def test_unknown_material_code(self):
         unit, lane, run = self._unit()
-        cmds = unit.apply_tag(lane, tag(material=None, material_code="09999"), run)
+        cmds = unit.apply_tag(lane, tag(material=None, material_code="09999"))
         assert cmds == ["SET_COLOR LANE=lane1 COLOR=E7A18E", "SET_WEIGHT LANE=lane1 WEIGHT=1000"]
         assert msgs(unit) == [("info", "CFS lane1: material code 09999 isn't known; add it to "
                                        "rfid_materials in [AFC_CFS CFS_1], e.g. rfid_materials: "
@@ -4785,7 +4797,7 @@ class TestAfcCFSApplyTag:
     def test_nothing_usable(self):
         unit, lane, run = self._unit()
         empty = tag(material=None, material_code="", color=None, weight=None)
-        assert unit.apply_tag(lane, empty, run) == []
+        assert unit.apply_tag(lane, empty) == []
         assert msgs(unit) == []
 
 
@@ -5020,13 +5032,13 @@ NOTHING = "CFS lanes are fed by the box itself; there is nothing to calibrate."
 class TestAfcCFSCalibrateLane:
     def test_nothing_to_calibrate(self):
         unit, (lane,) = ready_unit()
-        assert unit.calibrate_lane(lane, 1.0) == (False, NOTHING, 0.0)
+        assert unit.calibrate_lane(lane, 1.0, gcmd()) == (False, NOTHING, 0.0)
 
 
 class TestAfcCFSCalibrateBowden:
     def test_nothing_to_calibrate(self):
         unit, (lane,) = ready_unit()
-        assert unit.calibrate_bowden(lane, 900.0, 1.0) == (False, NOTHING, 0.0)
+        assert unit.calibrate_bowden(lane, 900.0, 1.0, gcmd()) == (False, NOTHING, 0.0)
 
 
 class TestAfcCFSPrepCaptureTd1:
