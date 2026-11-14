@@ -1,19 +1,24 @@
 """Tests that only run in the afc-creality-cfs repo, not in AFC's.
 
 - cfs_trace_summary.py, the trace summarizer in tools/.
+- The config templates' macros (templates/AFC_CFS_*.cfg).
 - The CFS unit on Klipper's real reactor against a simulated box
   (tests/cfs_reactor_harness.py and tests/cfs_sim.py), skipped unless
   KLIPPER_PATH points at a Klipper (or Kalico) checkout.
 """
 from __future__ import annotations
 
+import ast
+import configparser
 import importlib.util
 import io
 import json
 import os
+import pathlib
 import subprocess
 import sys
 
+import jinja2
 import pytest
 
 
@@ -159,3 +164,108 @@ class TestAfcCFSOnRealReactor:
         assert "exception" not in result, result["exception"]
         failed = {k: v for k, v in result["checks"].items() if not v}
         assert not failed, "failed checks {} (info: {})".format(list(failed), result["info"])
+
+
+# ============================================================================
+# Config template macros (templates/, incl. the K1 park/leave-purge macros)
+# ============================================================================
+
+TEMPLATES = sorted((pathlib.Path(__file__).resolve().parent.parent / "templates")
+                   .glob("AFC_CFS_*.cfg"))
+
+
+def _macros():
+    for path in TEMPLATES:
+        cp = configparser.RawConfigParser(strict=False, inline_comment_prefixes=None,
+                                          comment_prefixes=("#", ";"))
+        cp.read(path)
+        for section in cp.sections():
+            if section.startswith("gcode_macro ") and cp.has_option(section, "gcode"):
+                yield pytest.param(cp.get(section, "gcode"), id="{}:{}".format(path.name, section))
+
+
+class TestAfcCFSTemplates:
+    @pytest.mark.parametrize("gcode", list(_macros()))
+    def test_macro_compiles(self, gcode):
+        # Klipper's environment: "{" "}" for expressions
+        env = jinja2.Environment("{%", "%}", "{", "}")
+        env.parse(gcode)
+
+    def test_found_templates(self):
+        ids = [p.id for p in _macros()]
+        assert "AFC_CFS_K1.cfg:gcode_macro AFC_CFS_PARK" in ids
+        assert "AFC_CFS_K1.cfg:gcode_macro AFC_CFS_LEAVE_PURGE" in ids
+
+
+def _render_leave_purge(y=230.0, homed="xyz", next_lane=None, current_load=None):
+    """Render AFC_CFS_LEAVE_PURGE from AFC_CFS_K1.cfg as Klipper would and return its lines."""
+    path = next(p for p in TEMPLATES if p.name == "AFC_CFS_K1.cfg")
+    cp = configparser.RawConfigParser(strict=False, inline_comment_prefixes=None,
+                                      comment_prefixes=("#", ";"))
+    cp.read(path)
+    section = "gcode_macro AFC_CFS_LEAVE_PURGE"
+    env = jinja2.Environment("{%", "%}", "{", "}")
+    template = env.from_string(cp.get(section, "gcode"))
+    printer = {
+        "gcode_macro AFC_CFS_PARK": {"safe_y": 215.0, "travel_speed": 250},
+        "AFC": {"next_lane": next_lane, "current_load": current_load},
+        "toolhead": {"homed_axes": homed, "position": {"y": y}},
+    }
+    text = template.render(printer=printer, params={}, settle_ms=1000)
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _render_park(x=50.0, y=230.0, z=0.2):
+    """Render AFC_CFS_PARK from AFC_CFS_K1.cfg with its default variables and return its lines."""
+    path = next(p for p in TEMPLATES if p.name == "AFC_CFS_K1.cfg")
+    cp = configparser.RawConfigParser(strict=False, inline_comment_prefixes=None,
+                                      comment_prefixes=("#", ";"))
+    cp.read(path)
+    section = "gcode_macro AFC_CFS_PARK"
+    # Klipper parses macro variables with ast.literal_eval
+    variables = {k[len("variable_"):]: ast.literal_eval(v.split("#")[0].strip())
+                 for k, v in cp.items(section) if k.startswith("variable_")}
+    env = jinja2.Environment("{%", "%}", "{", "}")
+    template = env.from_string(cp.get(section, "gcode"))
+    printer = {"gcode_move": {"gcode_position": {"x": x, "y": y, "z": z}},
+               "toolhead": {"axis_maximum": {"z": 300.0}}}
+    text = template.render(printer=printer, params={}, **variables)
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+class TestAfcCFSParkMacro:
+    def test_parks_from_behind_safe_y(self):
+        assert _render_park() == ["G90", "AFC_DISABLE_SKEW", "G1 Z30.0 F900",
+                                  "G1 Y215.0 F15000", "G1 X148.0 F15000",
+                                  "G1 Y225.3 F15000", "M400", "AFC_ENABLE_SKEW"]
+
+    def test_already_high_and_in_front(self):
+        assert _render_park(y=200.0, z=50.0) == ["G90", "AFC_DISABLE_SKEW", "G1 X148.0 F15000",
+                                                 "G1 Y225.3 F15000", "M400", "AFC_ENABLE_SKEW"]
+
+    def test_already_lined_up_in_x(self):
+        assert _render_park(x=148.0, z=50.0) == ["G90", "AFC_DISABLE_SKEW", "G1 Y225.3 F15000",
+                                                 "M400", "AFC_ENABLE_SKEW"]
+
+
+class TestAfcCFSLeavePurgeMacro:
+    LEAVES = ["SAVE_GCODE_STATE NAME=_afc_cfs_leave", "G90", "AFC_DISABLE_SKEW",
+              "G1 Y215.0 F15000", "M400", "AFC_ENABLE_SKEW", "G4 P1000",
+              "RESTORE_GCODE_STATE NAME=_afc_cfs_leave"]
+
+    def test_leaves_the_chute(self):
+        assert _render_leave_purge() == self.LEAVES
+
+    def test_already_in_front(self):
+        assert _render_leave_purge(y=200.0) == []
+
+    def test_not_homed(self):
+        assert _render_leave_purge(homed="xz") == []
+
+    def test_stays_between_unload_and_load_of_a_change(self):
+        # After the unload the old lane is still (or no longer) current; the load comes next
+        assert _render_leave_purge(next_lane="lane2", current_load="lane1") == []
+        assert _render_leave_purge(next_lane="lane2", current_load=None) == []
+
+    def test_leaves_after_the_load_of_a_change(self):
+        assert _render_leave_purge(next_lane="lane2", current_load="lane2") == self.LEAVES

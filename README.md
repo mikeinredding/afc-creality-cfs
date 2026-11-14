@@ -59,7 +59,8 @@ cd afc-creality-cfs
 ./install.sh -t            # links extras into Klipper, copies the example config
 ```
 
-Then edit `AFC/AFC_CFS_1.cfg` (serial path, toolhead sensor pin, cutter position)
+Then edit `AFC/AFC_CFS_1.cfg` (serial path, toolhead sensor pin, cutter position; on a K1 the
+installer also copies `AFC_CFS_K1.cfg` with the purge-chute macros)
 as described in [docs/CFS.md](docs/CFS.md) and restart Klipper.
 `./install.sh -u` removes the links.
 

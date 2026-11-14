@@ -4,7 +4,8 @@
 #
 #   ./install.sh                 link extras (auto-detects Klipper)
 #   ./install.sh -k <klipper>    use this Klipper/Kalico checkout
-#   ./install.sh -t              also copy templates/AFC_CFS_1.cfg into your AFC config dir
+#   ./install.sh -t              also copy templates/AFC_CFS_1.cfg (and AFC_CFS_K1.cfg on a
+#                                K1-series printer) into your AFC config dir
 #   ./install.sh -u              remove the links
 #
 # Requires AFC (AFC-Klipper-Add-On) to be installed already.
@@ -86,6 +87,17 @@ if [ "$COPY_TEMPLATE" -eq 1 ]; then
       else
         cp "$REPO_DIR/templates/AFC_CFS_1.cfg" "$d/AFC_CFS_1.cfg"
         echo "copied template to $d/AFC_CFS_1.cfg (edit serial, pin_tool_start first!)"
+      fi
+      # K1-series (Creality's /usr/data layout): the purge-chute park/leave macros
+      if [ "$d" = /usr/data/printer_data/config/AFC ]; then
+        if [ -e "$d/AFC_CFS_K1.cfg" ]; then
+          echo "$d/AFC_CFS_K1.cfg already exists, not overwriting"
+        elif grep -qs "gcode_macro AFC_CFS_PARK" "$d"/*.cfg; then
+          echo "AFC_CFS_PARK is already in your config; not copying AFC_CFS_K1.cfg"
+        else
+          cp "$REPO_DIR/templates/AFC_CFS_K1.cfg" "$d/AFC_CFS_K1.cfg"
+          echo "copied $d/AFC_CFS_K1.cfg (K1 park/purge macros; see its header)"
+        fi
       fi
       break
     fi

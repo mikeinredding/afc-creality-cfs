@@ -19,7 +19,8 @@ printer and follow the test plan below in order.
 |---|---|
 | `extras/AFC_CFS.py` | Everything, in one file: the wire protocol (framing, CRC8, parser, command constants), the `[AFC_CFS <name>]` unit (serial link, polling, presence, RFID) and the lane sequences. |
 | `[AFC_lane <name>]` | Lanes are plain AFC lanes with `unit: <cfs>:<1-4>`, so Mainsail, Fluidd and GrumpyScreen show them like any other AFC lane. At connect the unit sets each lane's `custom_load_cmd` / `custom_unload_cmd` to its `AFC_CFS_TOOL_LOAD` / `AFC_CFS_TOOL_UNLOAD`. |
-| `templates/AFC_CFS_1.cfg` | Example config for one box. |
+| `templates/AFC_CFS_1.cfg` | Example config for one box, for any printer. |
+| `templates/AFC_CFS_K1.cfg` | K1-series additions: the purge-chute park and leave macros and the AFC settings that use them. |
 
 The box connects over its built-in CH340 USB-RS485 adapter at 230400 baud.
 All serial I/O is non-blocking on Klipper's reactor (`register_fd` + completions),
@@ -91,7 +92,7 @@ section".
    cd afc-creality-cfs && ./install.sh -t
    ```
    It finds Klipper at `/usr/data/klipper`, links the CFS files into its extras,
-   and copies `AFC_CFS_1.cfg` into `/usr/data/printer_data/config/AFC/`.
+   and copies `AFC_CFS_1.cfg` and `AFC_CFS_K1.cfg` into `/usr/data/printer_data/config/AFC/`.
 3. Make sure nothing else owns the box: no `box.cfg` include, no `[box]` section,
    no Creality `box_wrapper`. Simple AF's install (and the
    [K1 firmware downgrade](https://pellcorp.github.io/creality-wiki/cfs_downgrade/)
@@ -101,7 +102,7 @@ section".
    others have tested.
 4. Edit `AFC/AFC_CFS_1.cfg`:
    - `serial:` — `ls /dev/serial/by-id/`, pick the `1a86` device.
-   - `cutter_sensor_pin:` — if your kit's cutter switch is on a Klipper pin.
+   - `cutter_sensor_pin:` — uncomment it if your kit's cutter switch is on a Klipper pin.
 
    And in `AFC/AFC_Hardware.cfg`, under `[AFC_extruder extruder]` (not in the CFS
    file: AFC loads `AFC/*.cfg` alphabetically, so `AFC_Hardware.cfg` would override it):
@@ -235,8 +236,8 @@ toolhead leaves diagonally. `AFC_CFS_LEAVE_PURGE` moves straight forward to
 
 **Why `AFC_CFS_PARK`:** AFC_PARK can only raise Z relative to the current height. A
 load near the bed (first load of a print, or right after homing) would reach the
-purge chute at Z ~0–2, where the mechanism hits the bed. `AFC_CFS_PARK` (in the
-template) raises Z to at least 30, never lowers it, then moves over the chute.
+purge chute at Z ~0–2, where the mechanism hits the bed. `AFC_CFS_PARK` (in
+`AFC_CFS_K1.cfg`) raises Z to at least 30, never lowers it, then moves over the chute.
 During tool changes AFC also lifts by `[AFC] z_hop` before the cut.
 
 ### Calibrating the cutter position
