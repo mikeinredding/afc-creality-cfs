@@ -34,7 +34,7 @@ import threading
 import time
 import traceback
 from enum import Enum
-from typing import (TYPE_CHECKING, Any, Callable, Dict, List, NamedTuple, Optional, Set,
+from typing import (TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional, Set,
                     Tuple)
 
 import configfile
@@ -2417,8 +2417,8 @@ class afcCFS(afcUnit):
 
         if (self.afc.park
             and self.afc.park_cmd):
-            self.afc.gcode.run_script_from_command(
-                f"{self.afc.park_cmd} EXTRUDER={lane.extruder_obj.name}")
+            self.afc.run_script(
+                f"{self.afc.park_cmd} EXTRUDER={lane.extruder_obj.name}", gcmd)
 
         attempts_used = 0
         detail = ""
@@ -2464,7 +2464,7 @@ class afcCFS(afcUnit):
 
     # Tool unload
 
-    def _run_cutter_sequence(self, lane: AFCLane) -> Optional[str]:
+    def _run_cutter_sequence(self, lane: AFCLane, gcmd: Any) -> Optional[str]:
         """
         Run AFC's cut macro. With a cutter switch configured, verify it: the
         switch must have fired during the cut (blade reached the end of its
@@ -2472,6 +2472,7 @@ class afcCFS(afcUnit):
         the cut.
 
         :param lane: lane to act on
+        :param gcmd: command context the macro runs through
         :return Optional[str]: None, or why the cut failed
         """
         if not self.afc.tool_cut:
@@ -2481,8 +2482,8 @@ class afcCFS(afcUnit):
         for attempt in range(max(self.load_attempts, 1) + 1):
             triggers_before = cutter.cutter_trigger_count
             lane.extruder_obj.estats.increase_cut_total()
-            self.afc.gcode.run_script_from_command(
-                f"{self.afc.tool_cut_cmd} EXTRUDER={lane.extruder_obj.name}")
+            self.afc.run_script(
+                f"{self.afc.tool_cut_cmd} EXTRUDER={lane.extruder_obj.name}", gcmd)
             if not cutter.cutter_sensor_pin:
                 self._lane_trace(lane, "cut", attempt=attempt + 1, verified=False)
                 return None
@@ -2509,21 +2510,22 @@ class afcCFS(afcUnit):
             self.logger.warning(f"CFS {lane.name}: cut {attempt + 1} not confirmed: {reason}")
         return reason
 
-    def _run_post_cut_macros(self, lane: AFCLane) -> None:
+    def _run_post_cut_macros(self, lane: AFCLane, gcmd: Any) -> None:
         """
         Park and form a tip after the cut, if enabled.
 
         :param lane: lane to act on
+        :param gcmd: command context the macros run through
         """
         if (self.afc.park
             and self.afc.park_cmd):
-            self.afc.gcode.run_script_from_command(
-                f"{self.afc.park_cmd} EXTRUDER={lane.extruder_obj.name}")
+            self.afc.run_script(
+                f"{self.afc.park_cmd} EXTRUDER={lane.extruder_obj.name}", gcmd)
         if self.afc.form_tip:
             if self.afc.form_tip_cmd == "AFC":
                 self.printer.lookup_object("AFC_form_tip").tip_form()
             elif self.afc.form_tip_cmd:
-                self.afc.gcode.run_script_from_command(self.afc.form_tip_cmd)
+                self.afc.run_script(self.afc.form_tip_cmd, gcmd)
 
     def _retract_to_box(self, lane: AFCLane) -> Tuple[Any, ...]:
         """
@@ -2613,11 +2615,11 @@ class afcCFS(afcUnit):
         if self._cutter_engaged():
             self._lane_fail(lane, "cutter sensor is engaged before cutting; check the cutter lever")
             return
-        cut_problem = self._run_cutter_sequence(lane)
+        cut_problem = self._run_cutter_sequence(lane, gcmd)
         if cut_problem:
             self._lane_fail(lane, cut_problem)
             return
-        self._run_post_cut_macros(lane)
+        self._run_post_cut_macros(lane, gcmd)
 
         with self.operation():
             try:
@@ -2708,7 +2710,7 @@ class afcCFS(afcUnit):
         gcmd.respond_info(f"CFS {lane.name} (slot {slot}) tag: {self._tag_summary(tag)}\n"
                           f"  record {record}")
         if gcmd.get_int("APPLY", 1, minval=0, maxval=1):
-            for cmd in self.apply_tag(lane, tag, self.afc.gcode.run_script_from_command):
+            for cmd in self.apply_tag(lane, tag, gcmd):
                 gcmd.respond_info("  " + cmd)
 
     # RFID tags
@@ -2820,7 +2822,7 @@ class afcCFS(afcUnit):
             try:
                 tag = self.read_tag(lane)
                 if tag is not None:
-                    self.apply_tag(lane, tag, self.afc.gcode.run_script)
+                    self.apply_tag(lane, tag)
             except Exception:
                 self.logger.warning(f"CFS {lane.name}: tag read failed\n{traceback.format_exc()}")
         if not self._rfid_queue:
@@ -2892,14 +2894,14 @@ class afcCFS(afcUnit):
         return ", ".join(parts)
 
     def apply_tag(self, lane: AFCLane, tag: Dict[str, Any],
-                  run_gcode: Callable[[str], Any]) -> List[str]:
+                  gcmd: Optional[Any] = None) -> List[str]:
         """
         Set the lane from its tag with AFC's own commands. A Spoolman ID on
         the tag wins; a lane that already has a Spoolman spool is left alone.
 
         :param lane: lane to act on
         :param tag: decoded tag
-        :param run_gcode: function that runs a gcode line
+        :param gcmd: command context to run them through, or None from a timer
         :return List[str]: the commands run
         """
         cmds = []
@@ -2922,7 +2924,7 @@ class afcCFS(afcUnit):
             if tag.get("weight"):
                 cmds.append(f'SET_WEIGHT LANE={lane.name} WEIGHT={tag["weight"]}')
         for cmd in cmds:
-            run_gcode(cmd)
+            self.afc.run_script(cmd, gcmd)
         return cmds
 
     def apply_lane_state(self, cur_lane: AFCLane, present: bool) -> str:
@@ -3065,23 +3067,26 @@ class afcCFS(afcUnit):
         self.logger.debug(f"CFS {self.name}: load_then_home not supported, box handles feeding")
         return False, 0, AFCMoveWarning.ERROR
 
-    def calibrate_lane(self, cur_lane: AFCLane, tol: float) -> Tuple[Any, ...]:
+    def calibrate_lane(self, cur_lane: AFCLane, tol: float, gcmd: Any) -> Tuple[Any, ...]:
         """
         CFS lanes have nothing to calibrate.
 
         :param cur_lane: lane to act on
         :param tol: unused
+        :param gcmd: unused
         :return tuple: (False, message, 0.0)
         """
         return False, self.CALIBRATION_UNSUPPORTED, 0.0
 
-    def calibrate_bowden(self, cur_lane: AFCLane, dis: float, tol: float) -> Tuple[Any, ...]:
+    def calibrate_bowden(self, cur_lane: AFCLane, dis: float, tol: float,
+                         gcmd: Any) -> Tuple[Any, ...]:
         """
         CFS lanes have nothing to calibrate.
 
         :param cur_lane: lane to act on
         :param dis: unused
         :param tol: unused
+        :param gcmd: unused
         :return tuple: (False, message, 0.0)
         """
         return False, self.CALIBRATION_UNSUPPORTED, 0.0

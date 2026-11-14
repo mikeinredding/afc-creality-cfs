@@ -38,6 +38,9 @@ if os.path.isfile(os.path.join(KLIPPY, "__init__.py")):
     pkg.__path__ = [KLIPPY]
     sys.modules["klippy"] = pkg
     from klippy import reactor as kreactor  # noqa: E402
+    # Drop the bare package again so conftest can install its klippy mock
+    # (AFC.py does "from klippy import Printer"); kreactor keeps working.
+    del sys.modules["klippy"]
 else:
     sys.path.append(KLIPPY)
     import reactor as kreactor  # noqa: E402
@@ -832,6 +835,7 @@ def sc_rfid_insert_reads_tag(r):
     rig.lane(1)
     lane4 = rig.lane(4)
     rig.afc.gcode.run_script = MagicMock()
+    rig.afc.gcode.get_mutex().test.return_value = False  # timer: mutex not held
     rig.unit.connect()
     rig.unit.read_material_mask()
     rig.unit.queue_tag_read(lane4, rig.unit.rfid_insert_delay)
@@ -857,6 +861,7 @@ def sc_rfid_no_tag_box_busy(r):
     rig = Rig(r, sim, rfid_busy_timeout=5.0, rfid_read_attempts=2, rfid_retry_interval=0.05)
     lane1 = rig.lane(1)
     rig.afc.gcode.run_script = MagicMock()
+    rig.afc.gcode.get_mutex().test.return_value = False  # timer: mutex not held
     rig.unit.connect()
     rig.unit.read_material_mask()
     start = r.monotonic()
@@ -904,6 +909,7 @@ def sc_rfid_read_at_startup(r):
     for i in (1, 2, 3, 4):
         rig.lane(i)
     rig.afc.gcode.run_script = MagicMock()
+    rig.afc.gcode.get_mutex().test.return_value = False  # timer: mutex not held
     rig.unit.connect()
     rig.unit._cfs_handle_ready()
     wait(r, 2.0)
@@ -984,8 +990,7 @@ def sc_rfid_spoolman_id(r):
     rig.unit.connect()
     rig.unit.read_material_mask()
     tag = rig.unit.read_tag(lane2, spin=False)
-    cmds = []
-    rig.unit.apply_tag(lane2, tag, cmds.append)
+    cmds = rig.unit.apply_tag(lane2, tag)
     sim.close()
     return {
         "spool_id_decoded": tag is not None and tag["spool_id"] == 42,
@@ -1001,6 +1006,7 @@ def sc_rfid_not_during_print(r):
     rig = Rig(r, sim, rfid_read=True, rfid_insert_delay=0.05)
     lane1 = rig.lane(1)
     rig.afc.gcode.run_script = MagicMock()
+    rig.afc.gcode.get_mutex().test.return_value = False  # timer: mutex not held
     printing = {"on": True}
     rig.unit.afc.function.in_print = lambda: printing["on"]
     rig.unit.connect()
