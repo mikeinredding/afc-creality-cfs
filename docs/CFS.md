@@ -18,7 +18,7 @@ printer and follow the test plan below in order.
 | File | Role |
 |---|---|
 | `extras/AFC_CFS.py` | Everything, in one file: the wire protocol (framing, CRC8, parser, command constants), the `[AFC_CFS <name>]` unit (serial link, polling, presence, RFID) and the lane sequences. |
-| `[AFC_lane <name>]` | Lanes are plain AFC lanes with `unit: <cfs>:<1-4>`, so Mainsail, Fluidd and GrumpyScreen show them like any other AFC lane. At connect the unit sets each lane's `custom_load_cmd` / `custom_unload_cmd` to its `AFC_CFS_TOOL_LOAD` / `AFC_CFS_TOOL_UNLOAD`. |
+| `[AFC_lane <name>]` | Lanes are plain AFC lanes with `unit: <cfs>:<1-4>`, so Mainsail, Fluidd and GrumpyScreen show them like any other AFC lane. At connect the unit sets each lane's `custom_load_cmd` to its `AFC_CFS_TOOL_LOAD`; AFC unloads through the unit's `unit_unload_lane` hook (the same unload as `AFC_CFS_TOOL_UNLOAD`), so a failed unload stops AFC instead of being recorded as unloaded. |
 | `templates/AFC_CFS_1.cfg` | Example config for one box, for any printer. |
 | `templates/AFC_CFS_K1.cfg` | K1-series additions: the purge-chute park and leave macros and the AFC settings that use them. |
 
