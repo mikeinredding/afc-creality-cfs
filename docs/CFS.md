@@ -18,7 +18,7 @@ printer and follow the test plan below in order.
 | File | Role |
 |---|---|
 | `extras/AFC_CFS.py` | Everything, in one file: the wire protocol (framing, CRC8, parser, command constants), the `[AFC_CFS <name>]` unit (serial link, polling, presence, RFID) and the lane sequences. |
-| `[AFC_lane <name>]` | Lanes are plain AFC lanes with `unit: <cfs>:<1-4>`, so Mainsail, Fluidd and GrumpyScreen show them like any other AFC lane. At connect the unit sets each lane's `custom_load_cmd` to its `AFC_CFS_TOOL_LOAD`; AFC unloads through the unit's `unit_unload_lane` hook (the same unload as `AFC_CFS_TOOL_UNLOAD`), so a failed unload stops AFC instead of being recorded as unloaded. |
+| `[AFC_lane <name>]` | Lanes are plain AFC lanes with `unit: <cfs>:<1-4>`, so Mainsail, Fluidd and GrumpyScreen show them like any other AFC lane. AFC loads and unloads through the unit's `unit_load_lane` and `unit_unload_lane` hooks (the same load and unload as `AFC_CFS_TOOL_LOAD` and `AFC_CFS_TOOL_UNLOAD`), like the ACE, so a failed load or unload stops AFC instead of being recorded as done. |
 | `templates/AFC_CFS_1.cfg` | Example config for one box, for any printer. |
 | `templates/AFC_CFS_K1.cfg` | K1-series additions: the purge-chute park and leave macros and the AFC settings that use them. |
 
@@ -301,7 +301,9 @@ Boxes forget their address when powered off and answer discovery one at a time, 
 no guaranteed order. Discovery therefore gives each box the `box_addr` of the section
 whose `box_uid` matches; a box at an address that belongs to another uid (e.g. left
 addressed by stock firmware) is refused with a message until the chain is
-power-cycled. A single box without `box_uid` works as before.
+power-cycled. A single box may leave `box_uid` unset; with two or more on a chain every
+section needs it, or Klipper refuses the config (a box that restarts alone couldn't be told
+apart from the others and could take an address still in use).
 
 Hardware-untested so far: two boxes answering one discovery broadcast at once (stock
 sends one broadcast per expected box, so they appear to take turns), and whether
