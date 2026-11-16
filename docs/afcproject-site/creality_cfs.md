@@ -44,8 +44,9 @@ Tested on a K1 with one box and a K1 Max with two boxes, both on Simple AF.
 - Every box's tube goes to its own input on the 4-in-1 buffer. That buffer is AFC's hub for
   every box (`hub: CFS_1` in each `[AFC_CFS]` section): filament left in it from any box blocks
   loading from any other.
-- With more than one box, set `box_uid` on each. Without it the boxes are addressed in the
-  order they answer, which can change between power-ups and swap your lanes.
+- With more than one box, set `box_uid` on each; Klipper refuses the config otherwise.
+  Without it the boxes would be addressed in the order they answer, which can change between
+  power-ups and swap your lanes.
   `AFC_CFS_STATUS UNIT=<name>` shows a box's uid.
 - A load takes about 25 seconds once the nozzle is hot: the box feeding to the toolhead sensor,
   then two short extruder pushes (`prime1`, `prime2`) while the box hands over; see *Load speed*
