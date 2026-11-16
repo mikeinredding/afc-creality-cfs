@@ -200,61 +200,6 @@ class TestCfsCopyFiles:
             printer_tree.afc_path / "templates" / "AFC_Hardware-AFC.cfg").read_bytes()
 
 
-    def test_more_boxes_get_their_own_files(self, printer_tree: PrinterTree) -> None:
-        ctx = make_ctx(printer_tree)
-        console = RecordingConsole()
-        unit().copy_files(ctx, console, ScriptedPrompter([]),
-                          UnitSelection(installation_type=CFS, cfs_num_boxes=3))
-        assert files(ctx) == ["AFC_CFS_1.cfg", "AFC_CFS_2.cfg", "AFC_CFS_3.cfg",
-                              "AFC_Hardware.cfg"]
-        boxes = find_cfs_boxes(ctx.afc_config_dir)
-        assert boxes[0].options["box_uid"] == UID_PLACEHOLDER
-        assert text_of(ctx, "AFC_CFS_2.cfg") == expected_box("CFS_2", 2, range(5, 9))
-        assert text_of(ctx, "AFC_CFS_3.cfg") == expected_box("CFS_3", 3, range(9, 13))
-        assert console.messages == []
-
-    def test_a_kept_box_1_with_a_uid_keeps_it(self, printer_tree: PrinterTree) -> None:
-        ctx = make_ctx(printer_tree)
-        put(ctx, "AFC_CFS_1.cfg", first_box_file(UID_A))
-        unit().copy_files(ctx, RecordingConsole(), ScriptedPrompter(["s"]),
-                          UnitSelection(installation_type=CFS, cfs_num_boxes=2))
-        assert text_of(ctx, "AFC_CFS_1.cfg") == first_box_file(UID_A)
-        assert text_of(ctx, "AFC_CFS_2.cfg") == expected_box("CFS_2", 2, range(5, 9))
-
-
-    def test_a_kept_box_1_without_its_section_adds_no_boxes(
-        self, printer_tree: PrinterTree
-    ) -> None:
-        ctx = make_ctx(printer_tree)
-        put(ctx, "AFC_CFS_1.cfg", "# mine\n")
-        console = RecordingConsole()
-        unit().copy_files(ctx, console, ScriptedPrompter(["s"]),
-                          UnitSelection(installation_type=CFS, cfs_num_boxes=2))
-        path = ctx.afc_config_dir / "AFC_CFS_1.cfg"
-        assert files(ctx) == ["AFC_CFS_1.cfg", "AFC_Hardware.cfg"]
-        assert console.messages == [
-            ("WARNING", f"Destination already exists: {path}"), ("INFO", f"Skipped: {path}"),
-            ("WARNING", f"No [AFC_CFS] section in {path}; the other boxes were not set up."),
-        ]
-
-
-class TestCfsWriteGenerated:
-    def test_writes_a_new_file(self, printer_tree: PrinterTree) -> None:
-        ctx = make_ctx(printer_tree)
-        dest = ctx.afc_config_dir / "AFC_CFS_2.cfg"
-        unit()._write_generated(ctx, RecordingConsole(), ScriptedPrompter([]), dest, "x\n")
-        assert dest.read_text() == "x\n"
-
-    def test_asks_before_replacing(self, printer_tree: PrinterTree) -> None:
-        ctx = make_ctx(printer_tree)
-        dest = put(ctx, "AFC_CFS_2.cfg", "mine\n")
-        console = RecordingConsole()
-        unit()._write_generated(ctx, console, ScriptedPrompter(["s"]), dest, "x\n")
-        assert dest.read_text() == "mine\n"
-        assert console.messages == [("WARNING", f"Destination already exists: {dest}"),
-                                    ("INFO", f"Skipped: {dest}")]
-
-
 class TestCfsInstallAdditional:
     def test_second_box_joins_the_chain(self, printer_tree: PrinterTree) -> None:
         ctx = make_ctx(printer_tree)
@@ -398,13 +343,6 @@ class TestCfsMessage:
             "distance and tool_stn_unload to 0.\n  "
         )
 
-    def test_more_boxes_add_the_uid_steps(self, printer_tree: PrinterTree) -> None:
-        ctx = make_ctx(printer_tree)
-        sel = UnitSelection(installation_type=CFS, cfs_num_boxes=2)
-        message = unit().message(ctx, sel)
-        assert message.endswith("Power-cycle the boxes once at the end.\n  ")
-        assert "2 boxes were set up (AFC_CFS_1.cfg to AFC_CFS_2.cfg)" in message
-
 
 class TestCfsAdditionalMessage:
     def test_says_how_the_box_joined_the_chain(self, printer_tree: PrinterTree) -> None:
@@ -455,41 +393,13 @@ class TestLaneSortKey:
         assert sorted(names, key=_lane_sort_key) == ["lane9", "lane10", "lane12", "spare"]
 
 
-class TestCfsUidSteps:
-    def test_single_box_needs_none(self) -> None:
-        assert unit()._uid_steps(UnitSelection(installation_type=CFS)) == ""
-
-    def test_one_box_at_a_time(self) -> None:
-        sel = UnitSelection(installation_type=CFS, cfs_num_boxes=4)
-        assert unit()._uid_steps(sel) == (
-            "\n- 4 boxes were set up (AFC_CFS_1.cfg to AFC_CFS_4.cfg). Each needs its box_uid "
-            "in place of the 000... placeholder.\n"
-            "  Power on only box 1 and restart Klipper: AFC.log names its uid (\"isn't in any "
-            "[AFC_CFS] section\"). Put it in AFC_CFS_1.cfg, power on box 2 as well, restart "
-            "Klipper, and so on for each box. Power-cycle the boxes once at the end.\n  "
-        )
-
-
-class TestCfsInstallOptions:
-    def test_box_count_steps_1_to_4(self, printer_tree: PrinterTree) -> None:
-        ctx = make_ctx(printer_tree)
-        sel = UnitSelection(installation_type=CFS)
-        assert install_rows(unit(), sel) == ["CFS Box Count : 1"]
-        option = unit().install_options()[0]
-        seen = []
-        for _ in range(4):
-            seen.append(option.activate(ctx, RecordingConsole(), ScriptedPrompter([]), sel))
-        assert seen == ["CFS Box Count: 2", "CFS Box Count: 3", "CFS Box Count: 4",
-                        "CFS Box Count: 1"]
-        assert sel.cfs_num_boxes == 1
-
-
 class TestCfsAdditionalOptions:
     def test_only_the_name(self, printer_tree: PrinterTree) -> None:
         ctx = make_ctx(printer_tree)
         put(ctx, "AFC_CFS_1.cfg", first_box_file())
         sel = UnitSelection(installation_type=CFS, unit_name="CFS_1")
         assert additional_rows(unit(), ctx, sel) == ["CFS Name : CFS_2"]
+        assert install_rows(unit(), sel) == []
 
 
 class TestCfsOnSelect:

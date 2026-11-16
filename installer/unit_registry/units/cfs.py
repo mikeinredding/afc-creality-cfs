@@ -19,12 +19,7 @@ from installer.platform_core.console import Console, Prompter
 from installer.platform_core.context import Context
 from installer.platform_core.fsops import safe_copy
 from installer.unit_registry.base import BufferTarget, UnitType
-from installer.unit_registry.options import (
-    CFS_BOX_OPTIONS,
-    ChoiceOption,
-    NameOption,
-    UnitOption,
-)
+from installer.unit_registry.options import NameOption, UnitOption
 from installer.unit_registry.selection import UnitSelection
 
 FIRST_NAME = "CFS_1"
@@ -194,9 +189,7 @@ class Cfs(UnitType):
         self, ctx: Context, console: Console, prompter: Prompter, sel: UnitSelection
     ) -> None:
         """
-        Copy the hardware file and the CFS unit file, then write the other boxes' files.
-
-        With more than one box every box needs box_uid, so box 1 gets the placeholder too.
+        Copy the hardware file and the CFS unit file.
 
         :param ctx: installer context
         :param console: where messages go
@@ -208,38 +201,6 @@ class Cfs(UnitType):
         safe_copy(ctx, console, prompter, templates / "AFC_Hardware-AFC.cfg",
                   cfg / "AFC_Hardware.cfg")
         safe_copy(ctx, console, prompter, templates / TEMPLATE, cfg / TEMPLATE)
-        if sel.cfs_num_boxes < 2:
-            return
-        first = next((box for box in find_cfs_boxes(cfg) if box.path == cfg / TEMPLATE), None)
-        if first is None:
-            console.print_msg(
-                "WARNING",
-                f"No [AFC_CFS] section in {cfg / TEMPLATE}; the other boxes were not set up.",
-            )
-            return
-        if not first.options.get("box_uid"):
-            set_key_in_section(first.path, f"[AFC_CFS {first.name}]", "box_uid",
-                               UID_PLACEHOLDER)
-        for box in range(2, sel.cfs_num_boxes + 1):
-            name = f"{self.additional_name_prefix}_{box}"
-            text = additional_box_config(name, first, box, 4 * (box - 1) + 1)
-            self._write_generated(ctx, console, prompter, cfg / f"AFC_{name}.cfg", text)
-
-    def _write_generated(self, ctx: Context, console: Console, prompter: Prompter,
-                         dest: Path, text: str) -> None:
-        """
-        Write a generated config file, asking first if it exists (like every other unit).
-
-        :param ctx: installer context
-        :param console: where messages go
-        :param prompter: used when the file already exists
-        :param dest: the file to write
-        :param text: its contents
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            generated = Path(tmp) / dest.name
-            generated.write_text(text)
-            safe_copy(ctx, console, prompter, generated, dest)
 
     def install_additional(
         self, ctx: Context, console: Console, prompter: Prompter, sel: UnitSelection
@@ -276,7 +237,11 @@ class Cfs(UnitType):
         if not first.options.get("box_uid"):
             self._ask_first_uid(console, prompter, first)
         text = additional_box_config(name, first, free[0], _next_lane_number(cfg))
-        self._write_generated(ctx, console, prompter, unit_file, text)
+        with tempfile.TemporaryDirectory() as tmp:
+            generated = Path(tmp) / unit_file.name
+            generated.write_text(text)
+            # safe_copy asks before replacing an existing file, like every other unit
+            safe_copy(ctx, console, prompter, generated, unit_file)
 
     def _ask_first_uid(self, console: Console, prompter: Prompter, first: CfsBox) -> None:
         """
@@ -330,24 +295,6 @@ class Cfs(UnitType):
             "pin.\n\n"
             f"- In {ctx.afc_config_dir}/AFC_Hardware.cfg, set tool_stn to the toolhead "
             "sensor-to-nozzle distance and tool_stn_unload to 0.\n  "
-        ) + self._uid_steps(sel)
-
-    def _uid_steps(self, sel: UnitSelection) -> str:
-        """
-        How to fill in the box uids, one box at a time, when more than one box was set up.
-
-        :param sel: the user's unit choices
-        :return str: the steps, or an empty string for a single box
-        """
-        if sel.cfs_num_boxes < 2:
-            return ""
-        return (
-            f"\n- {sel.cfs_num_boxes} boxes were set up (AFC_CFS_1.cfg to "
-            f"AFC_CFS_{sel.cfs_num_boxes}.cfg). Each needs its box_uid in place of the "
-            "000... placeholder.\n"
-            "  Power on only box 1 and restart Klipper: AFC.log names its uid (\"isn't in any "
-            "[AFC_CFS] section\"). Put it in AFC_CFS_1.cfg, power on box 2 as well, restart "
-            "Klipper, and so on for each box. Power-cycle the boxes once at the end.\n  "
         )
 
     def additional_message(self, ctx: Context, sel: UnitSelection) -> Optional[str]:
@@ -377,14 +324,6 @@ class Cfs(UnitType):
             f"any [AFC_CFS] section\"): put it in box_uid in {unit_file}, restart Klipper, "
             "then power-cycle the boxes once."
         )
-
-    def install_options(self) -> List[UnitOption]:
-        """
-        How many boxes are on the chain (each gets its own unit file).
-
-        :return List[UnitOption]: the options
-        """
-        return [ChoiceOption("CFS Box Count", "cfs_num_boxes", CFS_BOX_OPTIONS, cast=int)]
 
     def additional_options(self) -> List[UnitOption]:
         """
