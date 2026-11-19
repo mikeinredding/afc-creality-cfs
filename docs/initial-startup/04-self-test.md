@@ -1,0 +1,85 @@
+## First self-test
+
+AFC will run a self-test automatically on startup, this is called the PREP routine. Select Unit type below to see how your unit runs during PREP
+
+=== "BoxTurtle"
+
+    The self-test will run through and activate the respoolers on each lane from lane1 to lane4 and will update the lightbox LED indicating status for each lane.
+
+    After the self-test completes, you hopefully will see a picture of a happy turtle in the console log (NOTE: an upright
+    turtle is a happy turtle)! If you get a picture of an error turtle (upside down), you may have misconfigured AFC
+    settings, broken pin or some other issue that needs attention.
+
+=== "NightOwl"
+
+    The self-test will run through and activate the motors on each lane from lane1 to lane 2. If LEDs are installed AFC will update indicating the status for each lane.
+
+    After the self-test completes, you hopefully will see a picture of an Owl in the console log. If you get text saying `Night Owl Not Ready` you may have misconfigured AFC settings, broken pin or some other issue that needs attention.
+=== "HTLF"
+
+    The self-test will first home to home sensor and then run through selecting each lane from lane1 to lane4 and will update the LED indicating status for each lane.
+    
+    After the self-test completes, you hopefully will see a `HTLF Ready` print out in the console log. If you get `HTLF Not Ready`, you may have misconfigured AFC settings, broken pin or some other issue that needs attention.
+
+=== "HTLF2-Claymore"
+
+    The self-test will run through each lane from lane1 to lane2 selecting them if filament is loaded into a lane. AFC will also update the LED indicating status for each lane.
+
+    After the self-test completes, you hopefully will see a `Claymore Ready` print out in the console log. If you get `Claymore Not Ready`, you may have misconfigured AFC settings, broken pin or some other issue that needs attention.
+
+=== "ViViD"
+
+    The self-test will run through each lane from lane1 to lane2 selecting them and if filament is loaded into a lane AFC will try and feed to the load sensor to verify that the filament is loaded. AFC will also update the LED indicating status for each lane.
+
+    After the self-test completes, you hopefully will see a `ViViD Ready` print out in the console log. If you get `ViViD Not Ready`, you may have misconfigured AFC settings, broken pin or some other issue that needs attention.
+
+=== "EMU"
+
+    The self-test runs through all lanes configured, and updates LED indicating status for each lane.
+
+    After the self-test completes, you hopefully will see a `EMU Ready` print out in the console log. If you get `EMU Not Ready`, you may have misconfigured AFC settings, broken pin or some other issue that needs attention.
+
+=== "ACE Pro 1/2"
+
+    Once AFC starts, a self-test is run. You should see something like the following printed in the console if
+    everything was successful.
+    ```
+    R  +---------------+
+    E  |   ACE 2 PRO   |
+    A  +---+---+---+---+
+    D  | O | O | O | O |
+    Y  +---+---+---+---+
+    Ace2_1
+    ```
+
+=== "Creality CFS"
+
+    Once AFC starts, it connects to each box and reads which slots have filament. You should see `CFS Ready` printed
+    in the console for each box. If you get `CFS Not Ready`, run `AFC_CFS_STATUS UNIT=CFS_1`: it shows whether the box
+    answers, its version and uid, which slots have filament, the buffer and the cutter switch. If the box doesn't
+    answer, check `serial` and the RS-485 cable; with two or more boxes, check that each has its own `box_addr` and
+    `box_uid`.
+
+    The box's lights: a pulsing white slot is the one loaded to the toolhead. Chasing red means the box thinks it has
+    lost contact with the printer, which can happen to one box while another box on the chain is busy for a long time
+    (e.g. reading an untagged RFID spool). It clears as soon as the printer next sends that box a command.
+
+The default status indicators are the following for filament changers that have LEDs:
+
+- Red: No filament loaded/detected at extruder sensor
+- Green: Filament loaded to lane extruder sensor
+- Blue: Filament loaded to toolhead
+- White: Filament in process of being loaded
+
+If the colors are different between LEDs, or if loading one changes the colors of others, your neopixel
+`color_order` (found in your unit-specific config file, e.g., `AFC/AFC_Turtle_1.cfg` for BoxTurtle) is incorrect. Try
+changing from the default of `GRBW` to `GRB` to start, those are the two most common options.
+
+You can display the status of sensors in Mainsail/Fluidd as regular filament switches by setting
+`enable_sensors_in_gui: True` either globally in `AFC/AFC.cfg` or in the individual component section (e.g.
+extruders in `AFC/Turtle_1.cfg`).
+
+If you are unable to resolve the error after visiting
+the [troubleshooting guide](../troubleshooting/troubleshooting.md),
+you can get support from the community on the AFC Software discord by opening a help thread (run the Discord command
+``/help``) to learn how).

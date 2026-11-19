@@ -1,0 +1,237 @@
+site_name: AFC Project Documentation
+site_description: "AFC Project Documentation"
+site_url: https://www.afcproject.dev/
+repo_url: https://github.com/AFCProject/Documentation
+edit_uri: 'blob/main/docs/'
+repo_name: AFCProject/Documentation
+use_directory_urls: False
+
+nav:
+  - Home:
+      - index.md
+      - Initial Startup Guide: initial-startup/01-overview.md
+      - Troubleshooting: troubleshooting/troubleshooting.md
+  - AFC-Klipper-Add-On:
+      - Overview: index.md
+      - Features:
+          - Overview: features.md
+          - LED Effects: features/led-effects.md
+          - Button Controls: features/buttons.md
+          - Runout Control: features/runouts.md
+          - Quiet Mode: features/quietmode.md
+          - Statistics: features/toolchange-stats.md
+          - eSpooler Print Assist: features/espooler.md
+          - Spoolman Support: features/spoolman.md
+          - QR Scanner Support: features/qrscanner.md
+          - Direct Drive: features/direct-drive.md
+          - Lane Mapping: features/lane-mapping.md
+      - GUI Support: gui.md
+      - Installation:
+          - Getting Started: installation/getting-started.md
+          - Runtime Options: installation/runtime-options.md
+          - Installation Menus:
+              - Main Menu: installation/main-menu.md
+              - Install Menu: installation/install-menu.md
+              - Utilities Menu: installation/utilities-menu.md
+              - Update Menu: installation/update-menu.md
+          - Uninstall Process: installation/uninstall-process.md
+          - Buffer Overview: installation/buffer-overview.md
+          - Buffer Ram Sensor: installation/buffer-ram-sensor.md
+          - Slicer / PRINT_START Setup: installation/slicer-setup.md
+      - Updating:
+          - Updating AFC-Klipper-Add-On: updates/updates.md
+      - Additional Units: additional-units/index.md
+      - Toolchangers:
+          - Overview: toolchanger/overview.md
+          - Configuration: toolchanger/configuration.md
+          - Print Start/End Macros: toolchanger/print_start_end.md
+          - Slicer Config: toolchanger/slicer_config.md
+          - Commercial Printers:
+            - Snapmaker U1: toolchanger/snapmaker.md
+      - Configuration:
+          - Configuration Overview: configuration/configuration_overview.md
+          - Configuration Files:
+              - AFC.cfg: configuration/AFC.cfg.md
+              - AFC_Hardware.cfg: configuration/AFC_Hardware.cfg.md
+              - AFC_UnitType_1.cfg: configuration/AFC_UnitType_1.cfg.md
+              - AFC_Macro_Vars.cfg: configuration/AFC_Macro_Vars.cfg.md
+              - AFC_Toolchanger.cfg: configuration/AFC_Toolchanger.cfg.md
+      - Klipper Commands:
+          - Command Overview: klipper/commands.md
+          - Internal Commands:
+              - Spool Commands: klipper/internal/spool.md
+              - Calibration Commands: klipper/internal/calibration.md
+              - Tip Forming Commands: klipper/internal/tip_forming.md
+              - Buffer Commands: klipper/internal/buffer.md
+              - Lane / Movement Commands: klipper/internal/lane.md
+              - Misc. Commands: klipper/internal/misc.md
+              - TD-1 Commands: klipper/internal/td1.md
+              - Toolchanger Commands: klipper/internal/toolchanger.md
+              - OpenAMS Commands: klipper/internal/openams.md
+              - ACE Pro 1/2 Commands: klipper/internal/ace.md
+              - Creality CFS Commands: klipper/internal/cfs.md
+          - External Macros: klipper/external/macros.md
+      - Configuration Examples: configuration/configuration_examples.md
+      - Calibration Process: installation/calibration.md
+      - Tuning Guide:
+          - Toolhead Variable Calculation: toolhead/calculation.md
+          - Purge Setup: toolhead/purge_setup.md
+      - TD-1: td1.md
+  - Initial Startup:
+      - Overview: initial-startup/01-overview.md
+      - Flashing: initial-startup/02-flashing.md
+      - Plugin Install:
+        - Initial Install: initial-startup/03-install-plugin.md
+        - Additional Units: additional-units/index.md
+      - Self Test: initial-startup/04-self-test.md
+      - Additional Tests: initial-startup/05-additional-tests.md
+      - Hotend Values: initial-startup/06-hotend-values.md
+      - Macro Variables: initial-startup/07-macro-variables.md
+      - Calibration: initial-startup/08-calibration.md
+      - Slicer Config: initial-startup/09-slicer-config.md
+      - Print Start Macro: initial-startup/10-print-start-macro.md
+      - Troubleshooting: initial-startup/11-troubleshooting.md
+  - Troubleshooting:
+      - Troubleshooting: troubleshooting/troubleshooting.md
+      - FAQ: troubleshooting/faq.md
+  - Latest Release: https://github.com/AFCProject/AFC-Klipper-Add-On/releases
+draft_docs: |
+  _unpublished.md
+
+theme:
+  icon:
+    repo: fontawesome/brands/github
+  name: material
+  logo: assets/logo.png
+  custom_dir: overrides
+  favicon: assets/favicon.ico
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/theme-light-dark
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/theme-light-dark
+        name: Switch to light mode
+  primary: custom
+
+  features:
+    - content.code.copy
+    - content.action.edit
+    - content.action.view
+    - search.suggest # Show suggestions when searching
+    - search.highlight # Highlight search results
+    - search.share # Share search results
+    - navigation.top # Adds a back to top button when scrolling long pages
+    - navigation.instant # XHR loading instead of full page reload
+    - navigation.instant.prefetch # start loading page if user hovers a link
+    - navigation.instant.progress # show progress bar when loading a page on slow connections
+    - navigation.tabs # Adds tabbed navigation to top bar when screen > 1220px
+    - navigation.tabs.sticky # Keep the tabbed navigation bar at the top of the screen when scrolling
+    - navigation.tracking # Track the current page in the navigation bar
+    #- navigation.expand # Start with all sections expanded
+    - navigation.path # Show the path to the current page at the top of the page
+    - navigation.footer # adds next and previous buttons to the bottom of the page
+    - toc.follow # Follow the table of contents when scrolling
+    - optimize
+
+plugins:
+  - mkdocs-video
+  - search:
+      lang: en
+  - mkdocs-simple-hooks:
+      hooks:
+        on_post_page: "mkdoc_hooks:post_page"
+        #on_serve: "mkdocs_hooks:force_reload"
+  - mkdocstrings:
+      default_handler: python
+      handlers:
+        python:
+          options:
+            show_source: false
+          paths: [./AFC-Klipper-Add-On/extras/]
+  - include-markdown
+
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.blocks.caption
+  - pymdownx.details
+  - pymdownx.tilde
+  - pymdownx.keys
+  - pymdownx.critic
+  - pymdownx.mark
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+      options:
+        custom_icons:
+          - overrides/.icons
+  - pymdownx.tabbed:
+      alternate_style: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - codehilite
+  - toc:
+      permalink: true
+
+extra_css:
+  - stylesheets/extra.css
+
+extra_javascript:
+  - javascripts/feedback.js
+  - javascripts/toc-tabbed-headings.js
+
+extra:
+  analytics:
+    provider: google
+    property: G-RW0ETKRRYB
+    feedback:
+      title: Was this page helpful?
+      ratings:
+        - icon: happyturtle
+          name: This page was helpful
+          data: 1
+          note: >-
+            Thanks for your feedback!
+        - icon: angryturtle
+          name: This page could be improved
+          data: 0
+          note: >-
+            Thanks for your feedback! Help us improve this page by
+            using our <a href="https://github.com/AFCProject/Documentation/issues/new/?title=[Feedback]+{title}+-+{url}" target="_blank" rel="noopener">feedback form</a>.
+  social:
+    - icon: fontawesome/brands/discord
+      link: https://discord.gg/z2tgWEnfDT
+      name: Join us on Discord!
+    - icon: fontawesome/brands/github
+      link: https://github.com/AFCProject
+      name: All out projects!
+  consent:
+    title: Cookie consent
+    description: >-
+      We use cookies to recognize your repeated visits and preferences, as well
+      as to measure the effectiveness of our documentation and whether users
+      find what they're searching for. With your consent, you're helping us to
+      make our documentation better.
+
+copyright: >
+  Copyright &copy; 2024 - 2026 AFC Project –
+  <a href="#__consent">Change cookie settings</a>
