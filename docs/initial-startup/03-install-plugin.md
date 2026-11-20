@@ -227,7 +227,6 @@
         | `default_material_temps` | `default: 220, ...` | Creality's purge temperature, for lanes with no material set |
         | `tool_cut` / `tool_cut_cmd` | `True` / `AFC_CUT` | Cuts at the toolhead before the box pulls the filament back |
         | `poop` | `True` | Purges after a color change |
-        | `auto_home` | `True` | Homes before a tool change on an unhomed printer |
 
         Set the park, cut, poop, kick and wipe positions for your printer as described on the
         [Macro variables](07-macro-variables.md) page.
