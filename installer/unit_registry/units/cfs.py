@@ -304,11 +304,12 @@ class Cfs(UnitType):
         """
         return (
             f"\n- Set serial in the {ctx.afc_config_dir}/{TEMPLATE} file: run "
-            "ls /dev/serial/by-id/ and use the 1a86 device.\n\n"
-            "- Set cutter_sensor_pin there if the CFS kit's cutter switch is on a Klipper "
+            "ls /dev/serial/by-id/ and use your USB to RS-485 adapter (a 1a86 device for "
+            "the cable in Creality's CFS kit).\n\n"
+            "- Set cutter_sensor_pin there if your cutter switch is wired to a Klipper "
             "pin.\n\n"
             f"- In {ctx.afc_config_dir}/AFC_Hardware.cfg, set tool_stn to the toolhead "
-            "sensor-to-nozzle distance and tool_stn_unload to 0.\n  "
+            "sensor-to-nozzle distance, tool_stn_unload to 0 and tool_load_speed to 10.\n  "
         )
 
     def additional_message(self, ctx: Context, sel: UnitSelection) -> Optional[str]:

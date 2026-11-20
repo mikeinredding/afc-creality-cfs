@@ -369,10 +369,10 @@ class TestCfsMessage:
         cfg = ctx.afc_config_dir
         assert unit().message(ctx, UnitSelection(installation_type=CFS)) == (
             f"\n- Set serial in the {cfg}/AFC_CFS_1.cfg file: run ls /dev/serial/by-id/ and use "
-            "the 1a86 device.\n\n"
-            "- Set cutter_sensor_pin there if the CFS kit's cutter switch is on a Klipper pin.\n\n"
+            "your USB to RS-485 adapter (a 1a86 device for the cable in Creality's CFS kit).\n\n"
+            "- Set cutter_sensor_pin there if your cutter switch is wired to a Klipper pin.\n\n"
             f"- In {cfg}/AFC_Hardware.cfg, set tool_stn to the toolhead sensor-to-nozzle "
-            "distance and tool_stn_unload to 0.\n  "
+            "distance, tool_stn_unload to 0 and tool_load_speed to 10.\n  "
         )
 
 
