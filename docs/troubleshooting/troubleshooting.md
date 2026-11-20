@@ -159,8 +159,7 @@ switch, link counters and each lane's last tag. `AFC_CFS_RECONNECT UNIT=<name>` 
 
 ### "Homing error occurred when trying to short move to hub sensor" right after an update
 
-Restart the Klipper service (`/etc/init.d/S55klipper_service restart` on a K1). `FIRMWARE_RESTART` rereads the config
-but keeps the old Python code loaded.
+Restart the Klipper service. `FIRMWARE_RESTART` rereads the config but keeps the old Python code loaded.
 
 ### Loads fail at the hand-off ("toolhead sensor cleared after the handoff")
 
