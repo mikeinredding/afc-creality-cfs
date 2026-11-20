@@ -1585,11 +1585,11 @@ eject_buffer: 475.0
 
 ## [AFC_CFS unit_name] Section
 
-The following options are available in the `[AFC_CFS unit_name]` section of the `AFC_CFS_1.cfg` file. These options
-control the configuration of the AFC system when interfacing with a Creality CFS box. The CFS is not an MCU; Klipper
-talks to the box's own firmware over RS-485 (through the CH340 USB adapter in the CFS kit's cable) and the box moves
-filament itself, so there are no pins or steppers in this section. Its lanes are plain `[AFC_lane]` sections with
-`unit: <unit_name>:<1-4>` for slots A-D, left to right, and no `prep` or `load` pins; the box reports filament
+The following options are available in the `[AFC_CFS unit_name]` section of the `AFC_UnitType_1.cfg` file. These
+options control the configuration of the AFC system when interfacing with a Creality CFS box. The CFS is not an MCU;
+Klipper talks to the box's own firmware over RS-485 (through the CH340 USB adapter in the CFS kit's cable) and the box
+moves filament itself, so there are no pins or steppers in this section. Its lanes are plain `[AFC_lane]` sections
+with `unit: <unit_name>:<1-4>` for slots A-D, left to right, and no `prep` or `load` pins; the box reports filament
 presence itself.
 
 Every box's tube goes to its own input on the CFS 4-in-1 buffer, which is AFC's hub for every box: each
