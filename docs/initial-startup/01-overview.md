@@ -119,8 +119,10 @@ the appropriate unit type (e.g. Boxturtle, HTLF, etc.).
     ## Connect
 
     ### Cable
-    - Connect the first box's RS-485 IN port to a USB port on your Klipper host through a USB to RS-485 adapter.
-      The cable in Creality's CFS kit has a CH340 adapter built in.
+    - Connect the first box's RS-485 IN port to a USB port on your Klipper host with the cable from Creality's CFS
+      kit, which has a CH340 USB to RS-485 adapter built in. This is the only connection AFC has been tested with.
+    - Other USB to RS-485 adapters should work, but they are untested. The box also takes its 24 V power through
+      this port, and a plain adapter only carries data, so the box still needs that supply.
     - For more boxes, daisy-chain them: box 1 OUT to box 2 IN, and so on, up to four boxes. All boxes on a chain
       share the one USB connection.
 
