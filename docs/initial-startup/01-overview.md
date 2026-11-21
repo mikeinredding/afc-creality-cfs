@@ -121,10 +121,13 @@ the appropriate unit type (e.g. Boxturtle, HTLF, etc.).
     ### Cable
     - Connect the first box's RS-485 IN port to a USB port on your Klipper host with the cable from Creality's CFS
       kit, which has a CH340 USB to RS-485 adapter built in. This is the only connection AFC has been tested with.
-    - Other USB to RS-485 adapters should work, but they are untested. The box also takes its 24 V power through
-      this port, and a plain adapter only carries data, so the box still needs that supply.
+    - Other USB to RS-485 adapters should work, but they are untested.
     - For more boxes, daisy-chain them: box 1 OUT to box 2 IN, and so on, up to four boxes. All boxes on a chain
       share the one USB connection.
+
+    ### Power
+    The boxes need 24 V. Plug the CFS's 24 V power adapter into one of the boxes; the USB connection does not power
+    them.
 
     ### Toolhead
     AFC needs a filament sensor at the toolhead to know when the box has fed filament far enough, and a cutter to cut
