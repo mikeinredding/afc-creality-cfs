@@ -126,9 +126,12 @@ the appropriate unit type (e.g. Boxturtle, HTLF, etc.).
       share the one USB connection.
 
     ### Power
-    The boxes need 24 V. Plug the CFS's 24 V power adapter into one box only: it powers every box on the chain
-    through the daisy-chain cables, and Creality warns against plugging a power adapter into more than one box. The
-    USB connection does not power the boxes.
+    The boxes need 24 V. Plug a 24 V power adapter (the one in Creality's CFS kit) into one box only: it powers every
+    box on the chain through the daisy-chain cables, and Creality warns against plugging a power adapter into more
+    than one box. The USB connection does not power the boxes.
+
+    !!! warning
+        Turn the power off before connecting or disconnecting any CFS cable, as Creality's CFS manual says.
 
     ### Toolhead
     AFC needs a filament sensor at the toolhead to know when the box has fed filament far enough, and a cutter to cut
