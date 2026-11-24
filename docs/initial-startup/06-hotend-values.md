@@ -234,6 +234,18 @@ Below is an example diagram of a Revo Voron hotend on FilamATrix/Clockwork 2:
     - `variable_pushback_length`: 20
 
 ------
+#### Creality K1 series
+
+=== "K1 integrated hotend (CFS toolhead kit)"
+
+    Values used with a Creality CFS (`tool_stn_unload: 0` is for the CFS, see the note at the top).
+
+    - `tool_stn`: 60
+    - `tool_stn_unload`: 0
+    - `variable_retract_length`: 0
+    - `variable_pushback_length`: 0
+
+------
 #### Custom / Other
 
 === "Hemera XS with Revo"
