@@ -64,7 +64,9 @@ the chain, so the uid is what ties each `[AFC_CFS]` section to its box. Add one 
    a box (pasting it is fine). If you skip it, the installer reminds you to set it before restarting Klipper.
 1. With the power off, move the buffer's 485 cable from the last box to the new box, and connect the last box to the new
    box's other port, so the buffer stays at the end of the chain. Connect the new box's tube to the next input on the
-   4-in-1 buffer, power it on and restart Klipper. `AFC.log` names the new box's uid ("isn't in any [AFC_CFS] section").
+   4-in-1 buffer, power it on and restart Klipper. A warning in the console (also in `AFC.log`) names the new box's
+   uid: "box uid ... isn't in any [AFC_CFS] section". `AFC_CFS_STATUS` only shows the uid of a box that is already
+   configured, so this warning is where a new box's uid comes from.
 1. Put that uid in the new box's `box_uid`, restart Klipper, then power-cycle the boxes once.
 1. Check it: put a spool in slot A of the new box. The lane the installer gave it (e.g. `lane5`) should show as ready.
 1. Repeat for the next box.
