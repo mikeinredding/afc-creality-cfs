@@ -141,7 +141,8 @@ the appropriate unit type (e.g. Boxturtle, HTLF, etc.).
     them. The USB connection does not power the boxes.
 
     !!! warning
-        Turn the power off before connecting or disconnecting any CFS cable, as Creality's CFS manual says.
+        Unplug the CFS power adapter before connecting or disconnecting any 485 cable between the boxes and the buffer;
+        Creality's CFS manual says not to change these cables with the power on.
 
     ### Toolhead
     AFC needs a filament sensor at the toolhead to know when the box has fed filament far enough, and a cutter to cut
