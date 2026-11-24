@@ -126,9 +126,14 @@ the appropriate unit type (e.g. Boxturtle, HTLF, etc.).
       with; other USB to RS-485 adapters should work, but they are untested.
     - Connect the box's other port to the CFS buffer with the 485 cable that comes with the CFS. The buffer reports
       its position over this cable, so it needs it as well as its PTFE tubes.
-    - For more boxes (up to four), chain them between the first box and the buffer: box 1 to box 2, box 2 to the
-      buffer, and so on, with the buffer always at the end. All boxes share the one USB connection. This has been
-      tested with two boxes.
+    - Start with only the first box connected. More boxes (up to four) are chained between the first box and the
+      buffer: box 1 to box 2, box 2 to the buffer, and so on, with the buffer always at the end. All boxes share the
+      one USB connection. This has been tested with two boxes.
+
+    !!! note
+        Connect extra boxes one at a time, after the first box is working, as described in
+        [Additional Units](../additional-units/index.md#creality-cfs). AFC tells boxes apart only by their `box_uid`,
+        so a new box must be the only one on the chain that isn't in your config yet.
 
     ### Power
     The boxes need 24 V. The CFS itself doesn't come with a power adapter: use the 24 V adapter from Creality's CFS
