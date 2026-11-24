@@ -225,7 +225,6 @@
 
         | Option | Set to | Why |
         |---|---|---|
-        | `default_material_temps` | `default: 220, ...` | Creality's purge temperature, for lanes with no material set |
         | `tool_cut` / `tool_cut_cmd` | `True` / `AFC_CUT` | Cuts at the toolhead before the box pulls the filament back |
         | `poop` | `True` | Purges after a color change |
 
