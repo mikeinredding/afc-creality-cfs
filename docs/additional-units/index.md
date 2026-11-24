@@ -76,5 +76,7 @@ the chain, so the uid is what ties each `[AFC_CFS]` section to its box. Add one 
    uid of a box that is already configured, so this warning is where a new box's uid comes from.
 1. In the new box's file (e.g. `AFC/AFC_CFS_2.cfg`), replace the `box_uid` placeholder (`000000000000000000000000`) with
    that uid, restart Klipper, then unplug the CFS power adapter and plug it back in once.
-1. Check it: put a spool in slot A of the new box. The lane the installer gave it (e.g. `lane5`) should show as ready.
+1. Check it in the console after that restart: the new box prints `CFS Ready`, and each of its lanes (e.g. `lane5` to
+   `lane8`) shows `EMPTY READY FOR SPOOL` or `FILAMENT PRESENT`, not `CFS NOT RESPONDING`. A spool in slot A of the new
+   box should then show on its first lane (e.g. `lane5`), which confirms the lanes belong to the box you just added.
 1. For each further box, repeat from step 2.
