@@ -126,9 +126,9 @@ the appropriate unit type (e.g. Boxturtle, HTLF, etc.).
       share the one USB connection.
 
     ### Power
-    The boxes need 24 V. Plug a 24 V power adapter (the one in Creality's CFS kit) into one box only: it powers every
-    box on the chain through the daisy-chain cables, and Creality warns against plugging a power adapter into more
-    than one box. The USB connection does not power the boxes.
+    The boxes need 24 V. The CFS itself doesn't come with a power adapter: use the 24 V adapter from Creality's CFS
+    upgrade kit, plugged into one box. One adapter has been tested powering two boxes through the cables between
+    them. The USB connection does not power the boxes.
 
     !!! warning
         Turn the power off before connecting or disconnecting any CFS cable, as Creality's CFS manual says.
