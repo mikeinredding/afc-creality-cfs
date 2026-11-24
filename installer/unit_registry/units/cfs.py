@@ -97,6 +97,52 @@ def _box_addr(box: CfsBox) -> int:
         return 0
 
 
+def _natural_key(text: str) -> Tuple[Tuple[int, int, str], ...]:
+    """
+    Sort `AFC_CFS_2.cfg` before `AFC_CFS_10.cfg`: digit runs compare as numbers.
+
+    :param text: a file or section name
+    :return Tuple[Tuple[int, int, str], ...]: the sort key
+    """
+    return tuple((0, int(part), "") if part.isdigit() else (1, 0, part)
+                 for part in re.findall(r"\d+|\D+", text))
+
+
+def _chain_key(box: CfsBox) -> Tuple[int, Tuple[Tuple[int, int, str], ...], str]:
+    """
+    Order boxes by box_addr, then by file and section name. An unreadable box_addr
+    goes last.
+
+    :param box: the section
+    :return: the sort key
+    """
+    addr = _box_addr(box)
+    return (addr if addr > 0 else MAX_BOXES + 1, _natural_key(box.path.name), box.name)
+
+
+def first_box(boxes: List[CfsBox]) -> CfsBox:
+    """
+    The chain's first box: the lowest box_addr, not the first file by name (a user may
+    have files such as AFC_CFS_10.cfg or a box with a name of their own).
+
+    :param boxes: the boxes found, at least one
+    :return CfsBox: the box new boxes are added after
+    """
+    return min(boxes, key=_chain_key)
+
+
+def chain_of(first: CfsBox, boxes: List[CfsBox]) -> List[CfsBox]:
+    """
+    The boxes on the same chain (serial port) as a box, in chain order.
+
+    :param first: a box on the chain
+    :param boxes: every box found
+    :return List[CfsBox]: the boxes sharing its serial port
+    """
+    serial = first.options.get("serial", "")
+    return sorted((b for b in boxes if b.options.get("serial", "") == serial), key=_chain_key)
+
+
 def _next_lane_number(cfg_dir: Path) -> int:
     """
     The first lane number after every `[AFC_lane laneN]` already configured.
@@ -157,10 +203,11 @@ def additional_box_config(name: str, first: CfsBox, box_addr: int, first_lane: i
         f"[AFC_lane lane{first_lane + slot}]\nunit: {name}:{slot + 1}\n" for slot in range(4)
     )
     return (
-        f"# Another Creality CFS on the same chain as {first.name}: box 1 OUT -> box 2 IN.\n"
-        "# Every box on a chain needs box_uid. Restart Klipper with the new box powered on:\n"
-        "# AFC.log names its uid (\"isn't in any [AFC_CFS] section\"). Put it in box_uid\n"
-        "# below, restart Klipper, then power-cycle the boxes once.\n"
+        f"# Another Creality CFS on the same chain (serial port) as {first.name}.\n"
+        "# Every box on a chain needs box_uid. Restart Klipper with the new box connected:\n"
+        "# the console (and AFC.log) names its uid (\"isn't in any [AFC_CFS] section\").\n"
+        "# Put it in box_uid below, restart Klipper, then unplug the CFS power adapter and\n"
+        "# plug it back in once.\n"
         "\n"
         f"[AFC_CFS {name}]\n"
         f"serial: {serial}   # same port as {first.name}\n"
@@ -229,7 +276,9 @@ class Cfs(UnitType):
             safe_copy(ctx, console, prompter, ctx.afc_path / "templates" / TEMPLATE, unit_file)
             replace_text(unit_file, FIRST_NAME, name)
             return
-        used = {_box_addr(box) for box in boxes}
+        first = first_box(boxes)
+        chain = chain_of(first, boxes)
+        used = {_box_addr(box) for box in chain}
         free = [addr for addr in range(1, MAX_BOXES + 1) if addr not in used]
         if not free:
             console.print_msg(
@@ -237,7 +286,13 @@ class Cfs(UnitType):
                 f"A CFS chain takes at most {MAX_BOXES} boxes; {name} was not added.",
             )
             return
-        first = boxes[0]
+        if len(chain) < len(boxes):
+            console.print_msg(
+                "WARNING",
+                f"Your CFS boxes are on more than one serial port. {name} joins the chain of "
+                f"{first.name} (box_addr {_box_addr(first)}); for another chain, change serial, "
+                f"box_addr and hub in AFC_{name}.cfg.",
+            )
         if not first.options.get("box_uid"):
             self._ask_first_uid(console, prompter, first)
         text = additional_box_config(name, first, free[0], _next_lane_number(cfg))
@@ -332,19 +387,22 @@ class Cfs(UnitType):
             return None
         lanes = sorted(section_names([unit_file], "AFC_lane"), key=_lane_sort_key)
         lane_text = f" with lanes {lanes[0]} to {lanes[-1]}" if lanes else ""
+        chain = chain_of(box, find_cfs_boxes(ctx.afc_config_dir))
+        others = [b for b in chain if b.name != name]
+        first_text = f" as {first_box(others).name}" if others else ""
         # The uid prompt's warning is cleared off the screen, so repeat it here
-        missing = [b for b in find_cfs_boxes(ctx.afc_config_dir)
-                   if b.name != name and not b.options.get("box_uid")]
+        missing = [b for b in others if not b.options.get("box_uid")]
         missing_text = "".join(
             f"\n{b.name} has no box_uid yet: set it in {b.path} before restarting Klipper "
             f"(AFC_CFS_STATUS UNIT={b.name} shows it)." for b in missing
         )
         return (
             f"{name} created: it joins the CFS chain as box_addr {box.options['box_addr']}"
-            f"{lane_text}, on the same serial port and hub as the first box.\n"
-            f"Restart Klipper with the new box powered on. AFC.log names its uid (\"isn't in "
-            f"any [AFC_CFS] section\"): put it in box_uid in {unit_file}, restart Klipper, "
-            f"then power-cycle the boxes once.{missing_text}"
+            f"{lane_text}, on the same serial port and hub{first_text}.\n"
+            f"Restart Klipper with the new box connected. The console (and AFC.log) names its "
+            f"uid (\"isn't in any [AFC_CFS] section\"): put it in box_uid in {unit_file}, "
+            f"restart Klipper, then unplug the CFS power adapter and plug it back in once."
+            f"{missing_text}"
         )
 
     def additional_options(self) -> List[UnitOption]:

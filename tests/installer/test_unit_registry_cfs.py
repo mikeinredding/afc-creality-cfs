@@ -13,11 +13,15 @@ from installer.unit_registry.units.cfs import (
     Cfs,
     CfsBox,
     _box_addr,
+    _chain_key,
     _lane_sort_key,
+    _natural_key,
     _next_lane_number,
     _strip_comment,
     additional_box_config,
+    chain_of,
     find_cfs_boxes,
+    first_box,
     normalize_uid,
 )
 from tests.installer.fakes import PrinterTree, RecordingConsole, ScriptedPrompter
@@ -27,6 +31,7 @@ CFS = "Creality CFS"
 UID_A = "67913b482422b00236353434"
 UID_B = "b0313b4e8411b00645353230"
 SERIAL = "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
+OTHER_SERIAL = "/dev/serial/by-path/platform-xhci-hcd.1-usb-0:1.2:1.0-port0"
 
 
 def make_ctx(tree: PrinterTree) -> Context:
@@ -71,19 +76,25 @@ def first_box_file(uid: str = "") -> str:
     )
 
 
+def box_section(name: str, addr: int, serial: str = SERIAL, uid: str = "") -> str:
+    uid_line = f"box_uid: {uid}\n" if uid else ""
+    return f"[AFC_CFS {name}]\nserial: {serial}\nbox_addr: {addr}\n{uid_line}"
+
+
 def expected_box(name: str, addr: int, lanes: range, hub: str = "CFS_1",
-                 serial: str = SERIAL, extruder: str = "extruder") -> str:
+                 serial: str = SERIAL, extruder: str = "extruder", first: str = "CFS_1") -> str:
     lane_text = "".join(
         f"[AFC_lane lane{n}]\nunit: {name}:{slot}\n" for slot, n in enumerate(lanes, 1)
     )
     return (
-        "# Another Creality CFS on the same chain as CFS_1: box 1 OUT -> box 2 IN.\n"
-        "# Every box on a chain needs box_uid. Restart Klipper with the new box powered on:\n"
-        "# AFC.log names its uid (\"isn't in any [AFC_CFS] section\"). Put it in box_uid\n"
-        "# below, restart Klipper, then power-cycle the boxes once.\n"
+        f"# Another Creality CFS on the same chain (serial port) as {first}.\n"
+        "# Every box on a chain needs box_uid. Restart Klipper with the new box connected:\n"
+        "# the console (and AFC.log) names its uid (\"isn't in any [AFC_CFS] section\").\n"
+        "# Put it in box_uid below, restart Klipper, then unplug the CFS power adapter and\n"
+        "# plug it back in once.\n"
         "\n"
         f"[AFC_CFS {name}]\n"
-        f"serial: {serial}   # same port as CFS_1\n"
+        f"serial: {serial}   # same port as {first}\n"
         f"box_addr: {addr}\n"
         "box_uid: 000000000000000000000000   # replace with this box's uid\n"
         f"hub: {hub}   # the shared 4-in-1 buffer\n"
@@ -146,6 +157,45 @@ class TestBoxAddr:
 
     def test_unreadable_is_0(self) -> None:
         assert _box_addr(CfsBox("CFS_2", Path("x"), {"box_addr": "two"})) == 0
+
+
+class TestNaturalKey:
+    def test_numbers_compare_as_numbers(self) -> None:
+        names = ["AFC_CFS_10.cfg", "AFC_CFS_2.cfg", "AFC_CFS_1.cfg", "AFC_Box.cfg"]
+        assert sorted(names, key=_natural_key) == [
+            "AFC_Box.cfg", "AFC_CFS_1.cfg", "AFC_CFS_2.cfg", "AFC_CFS_10.cfg"]
+
+
+def box(name: str, file: str, **options: str) -> CfsBox:
+    return CfsBox(name, Path(file), dict(options))
+
+
+class TestFirstBox:
+    def test_lowest_box_addr_wins_over_file_order(self) -> None:
+        boxes = [box("Alpha", "AFC_Alpha.cfg", box_addr="2"),
+                 box("CFS_10", "AFC_CFS_10.cfg", box_addr="3"),
+                 box("Main", "AFC_Main.cfg")]                 # unset box_addr is 1
+        assert first_box(boxes).name == "Main"
+
+    def test_same_address_falls_back_to_natural_file_order(self) -> None:
+        boxes = [box("B10", "AFC_CFS_10.cfg", box_addr="1"),
+                 box("B2", "AFC_CFS_2.cfg", box_addr="1")]
+        assert first_box(boxes).name == "B2"
+
+    def test_an_unreadable_address_goes_last(self) -> None:
+        boxes = [box("Bad", "AFC_A.cfg", box_addr="x"), box("Ok", "AFC_B.cfg", box_addr="4")]
+        assert first_box(boxes).name == "Ok"
+        assert _chain_key(boxes[0])[0] == 5
+
+
+class TestChainOf:
+    def test_only_boxes_on_the_same_serial_port_in_chain_order(self) -> None:
+        boxes = [box("C3", "AFC_C3.cfg", serial=SERIAL, box_addr="3"),
+                 box("X1", "AFC_X1.cfg", serial=OTHER_SERIAL),
+                 box("C1", "AFC_C1.cfg", serial=SERIAL),
+                 box("C2", "AFC_C2.cfg", serial=SERIAL, box_addr="2")]
+        assert [b.name for b in chain_of(boxes[2], boxes)] == ["C1", "C2", "C3"]
+        assert [b.name for b in chain_of(boxes[1], boxes)] == ["X1"]
 
 
 class TestNextLaneNumber:
@@ -232,12 +282,42 @@ class TestCfsInstallAdditional:
         ctx = make_ctx(printer_tree)
         put(ctx, "AFC_CFS_1.cfg", first_box_file(UID_A))
         for n in (2, 3, 4):
-            put(ctx, f"AFC_CFS_{n}.cfg", f"[AFC_CFS CFS_{n}]\nbox_addr: {n}\n")
+            put(ctx, f"AFC_CFS_{n}.cfg", box_section(f"CFS_{n}", n))
         console = RecordingConsole()
         unit().install_additional(ctx, console, ScriptedPrompter([]), additional("CFS_5"))
         assert not (ctx.afc_config_dir / "AFC_CFS_5.cfg").exists()
         assert console.messages == [
             ("WARNING", "A CFS chain takes at most 4 boxes; CFS_5 was not added.")]
+
+    def test_the_first_box_is_found_by_box_addr_not_file_name(
+        self, printer_tree: PrinterTree
+    ) -> None:
+        ctx = make_ctx(printer_tree)
+        # AFC_Alpha.cfg and AFC_CFS_10.cfg sort before AFC_CFS_2.cfg by name
+        put(ctx, "AFC_Alpha.cfg", box_section("Alpha", 2, uid=UID_B) + "hub: Other\n")
+        put(ctx, "AFC_CFS_10.cfg", box_section("CFS_10", 3, uid=UID_B) + "hub: Other\n")
+        put(ctx, "AFC_CFS_2.cfg", first_box_file(UID_A).replace("CFS_1", "CFS_2"))
+        prompter = ScriptedPrompter([])
+        unit().install_additional(ctx, RecordingConsole(), prompter, additional("CFS_11"))
+        assert text_of(ctx, "AFC_CFS_11.cfg") == expected_box(
+            "CFS_11", 4, range(5, 9), hub="CFS_2", first="CFS_2")
+        assert prompter.prompts == []
+
+    def test_a_second_chain_is_left_alone(self, printer_tree: PrinterTree) -> None:
+        ctx = make_ctx(printer_tree)
+        put(ctx, "AFC_CFS_1.cfg", first_box_file(UID_A))
+        # a full chain on another port doesn't use up this chain's addresses
+        for n in (2, 3, 4, 5):
+            put(ctx, f"AFC_X_{n}.cfg", box_section(f"X_{n}", n - 1, serial=OTHER_SERIAL,
+                                                   uid=UID_B))
+        console = RecordingConsole()
+        unit().install_additional(ctx, console, ScriptedPrompter([]), additional("CFS_2"))
+        assert text_of(ctx, "AFC_CFS_2.cfg") == expected_box("CFS_2", 2, range(5, 9))
+        assert console.messages == [(
+            "WARNING",
+            "Your CFS boxes are on more than one serial port. CFS_2 joins the chain of CFS_1 "
+            "(box_addr 1); for another chain, change serial, box_addr and hub in "
+            "AFC_CFS_2.cfg.")]
 
     def test_first_box_without_a_uid_is_asked_for_it(self, printer_tree: PrinterTree) -> None:
         ctx = make_ctx(printer_tree)
@@ -280,7 +360,7 @@ class TestCfsInstallAdditional:
     ) -> None:
         ctx = make_ctx(printer_tree)
         put(ctx, "AFC_CFS_1.cfg", first_box_file(UID_A))
-        put(ctx, "AFC_CFS_2.cfg", "[AFC_CFS CFS_2]\nbox_addr: 2\n")
+        put(ctx, "AFC_CFS_2.cfg", box_section("CFS_2", 2))
         unit().install_additional(ctx, RecordingConsole(), ScriptedPrompter(["o"]),
                                   additional("CFS_2"))
         # its own old section still counts, so the rewrite takes the next address
@@ -384,22 +464,32 @@ class TestCfsAdditionalMessage:
         path = ctx.afc_config_dir / "AFC_CFS_2.cfg"
         assert unit().additional_message(ctx, additional("CFS_2")) == (
             "CFS_2 created: it joins the CFS chain as box_addr 2 with lanes lane9 to lane12, on "
-            "the same serial port and hub as the first box.\n"
-            "Restart Klipper with the new box powered on. AFC.log names its uid (\"isn't in any "
-            f"[AFC_CFS] section\"): put it in box_uid in {path}, restart Klipper, then "
-            "power-cycle the boxes once."
+            "the same serial port and hub as CFS_1.\n"
+            "Restart Klipper with the new box connected. The console (and AFC.log) names its "
+            f"uid (\"isn't in any [AFC_CFS] section\"): put it in box_uid in {path}, restart "
+            "Klipper, then unplug the CFS power adapter and plug it back in once."
         )
 
     def test_boxes_still_missing_a_uid_are_named(self, printer_tree: PrinterTree) -> None:
         ctx = make_ctx(printer_tree)
         first = put(ctx, "AFC_CFS_1.cfg", first_box_file())
-        put(ctx, "AFC_CFS_2.cfg", "[AFC_CFS CFS_2]\nbox_addr: 2\n")
+        put(ctx, "AFC_CFS_2.cfg", box_section("CFS_2", 2))
         message = unit().additional_message(ctx, additional("CFS_2"))
         assert message is not None
         assert message.endswith(
-            "then power-cycle the boxes once.\n"
+            "plug it back in once.\n"
             f"CFS_1 has no box_uid yet: set it in {first} before restarting Klipper "
             "(AFC_CFS_STATUS UNIT=CFS_1 shows it).")
+
+    def test_boxes_on_another_chain_are_not_named(self, printer_tree: PrinterTree) -> None:
+        ctx = make_ctx(printer_tree)
+        put(ctx, "AFC_CFS_1.cfg", first_box_file(UID_A))
+        put(ctx, "AFC_X_1.cfg", box_section("X_1", 1, serial=OTHER_SERIAL))
+        put(ctx, "AFC_CFS_2.cfg", box_section("CFS_2", 2))
+        message = unit().additional_message(ctx, additional("CFS_2"))
+        assert message is not None
+        assert "as CFS_1." in message
+        assert "X_1" not in message
 
     def test_a_box_without_lanes(self, printer_tree: PrinterTree) -> None:
         ctx = make_ctx(printer_tree)
@@ -407,7 +497,8 @@ class TestCfsAdditionalMessage:
         message = unit().additional_message(ctx, additional("CFS_2"))
         assert message is not None
         assert message.startswith(
-            "CFS_2 created: it joins the CFS chain as box_addr 3, on the same serial port")
+            "CFS_2 created: it joins the CFS chain as box_addr 3, on the same serial port and "
+            "hub.\n")
 
     def test_not_added(self, printer_tree: PrinterTree) -> None:
         ctx = make_ctx(printer_tree)
