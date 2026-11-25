@@ -19,7 +19,6 @@ from installer.unit_registry.units.cfs import (
     _next_lane_number,
     _strip_comment,
     additional_box_config,
-    chain_of,
     find_cfs_boxes,
     first_box,
     normalize_uid,
@@ -31,7 +30,6 @@ CFS = "Creality CFS"
 UID_A = "67913b482422b00236353434"
 UID_B = "b0313b4e8411b00645353230"
 SERIAL = "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
-OTHER_SERIAL = "/dev/serial/by-path/platform-xhci-hcd.1-usb-0:1.2:1.0-port0"
 
 
 def make_ctx(tree: PrinterTree) -> Context:
@@ -188,16 +186,6 @@ class TestFirstBox:
         assert _chain_key(boxes[0])[0] == 5
 
 
-class TestChainOf:
-    def test_only_boxes_on_the_same_serial_port_in_chain_order(self) -> None:
-        boxes = [box("C3", "AFC_C3.cfg", serial=SERIAL, box_addr="3"),
-                 box("X1", "AFC_X1.cfg", serial=OTHER_SERIAL),
-                 box("C1", "AFC_C1.cfg", serial=SERIAL),
-                 box("C2", "AFC_C2.cfg", serial=SERIAL, box_addr="2")]
-        assert [b.name for b in chain_of(boxes[2], boxes)] == ["C1", "C2", "C3"]
-        assert [b.name for b in chain_of(boxes[1], boxes)] == ["X1"]
-
-
 class TestNextLaneNumber:
     def test_after_the_highest_lane(self, printer_tree: PrinterTree) -> None:
         ctx = make_ctx(printer_tree)
@@ -302,22 +290,6 @@ class TestCfsInstallAdditional:
         assert text_of(ctx, "AFC_CFS_11.cfg") == expected_box(
             "CFS_11", 4, range(5, 9), hub="CFS_2", first="CFS_2")
         assert prompter.prompts == []
-
-    def test_a_second_chain_is_left_alone(self, printer_tree: PrinterTree) -> None:
-        ctx = make_ctx(printer_tree)
-        put(ctx, "AFC_CFS_1.cfg", first_box_file(UID_A))
-        # a full chain on another port doesn't use up this chain's addresses
-        for n in (2, 3, 4, 5):
-            put(ctx, f"AFC_X_{n}.cfg", box_section(f"X_{n}", n - 1, serial=OTHER_SERIAL,
-                                                   uid=UID_B))
-        console = RecordingConsole()
-        unit().install_additional(ctx, console, ScriptedPrompter([]), additional("CFS_2"))
-        assert text_of(ctx, "AFC_CFS_2.cfg") == expected_box("CFS_2", 2, range(5, 9))
-        assert console.messages == [(
-            "WARNING",
-            "Your CFS boxes are on more than one serial port. CFS_2 joins the chain of CFS_1 "
-            "(box_addr 1); for another chain, change serial, box_addr and hub in "
-            "AFC_CFS_2.cfg.")]
 
     def test_first_box_without_a_uid_is_asked_for_it(self, printer_tree: PrinterTree) -> None:
         ctx = make_ctx(printer_tree)
@@ -480,16 +452,6 @@ class TestCfsAdditionalMessage:
             "plug it back in once.\n"
             f"CFS_1 has no box_uid yet: set it in {first} before restarting Klipper "
             "(AFC_CFS_STATUS UNIT=CFS_1 shows it).")
-
-    def test_boxes_on_another_chain_are_not_named(self, printer_tree: PrinterTree) -> None:
-        ctx = make_ctx(printer_tree)
-        put(ctx, "AFC_CFS_1.cfg", first_box_file(UID_A))
-        put(ctx, "AFC_X_1.cfg", box_section("X_1", 1, serial=OTHER_SERIAL))
-        put(ctx, "AFC_CFS_2.cfg", box_section("CFS_2", 2))
-        message = unit().additional_message(ctx, additional("CFS_2"))
-        assert message is not None
-        assert "as CFS_1." in message
-        assert "X_1" not in message
 
     def test_a_box_without_lanes(self, printer_tree: PrinterTree) -> None:
         ctx = make_ctx(printer_tree)

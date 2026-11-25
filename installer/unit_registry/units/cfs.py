@@ -131,18 +131,6 @@ def first_box(boxes: List[CfsBox]) -> CfsBox:
     return min(boxes, key=_chain_key)
 
 
-def chain_of(first: CfsBox, boxes: List[CfsBox]) -> List[CfsBox]:
-    """
-    The boxes on the same chain (serial port) as a box, in chain order.
-
-    :param first: a box on the chain
-    :param boxes: every box found
-    :return List[CfsBox]: the boxes sharing its serial port
-    """
-    serial = first.options.get("serial", "")
-    return sorted((b for b in boxes if b.options.get("serial", "") == serial), key=_chain_key)
-
-
 def _next_lane_number(cfg_dir: Path) -> int:
     """
     The first lane number after every `[AFC_lane laneN]` already configured.
@@ -277,8 +265,7 @@ class Cfs(UnitType):
             replace_text(unit_file, FIRST_NAME, name)
             return
         first = first_box(boxes)
-        chain = chain_of(first, boxes)
-        used = {_box_addr(box) for box in chain}
+        used = {_box_addr(box) for box in boxes}
         free = [addr for addr in range(1, MAX_BOXES + 1) if addr not in used]
         if not free:
             console.print_msg(
@@ -286,13 +273,6 @@ class Cfs(UnitType):
                 f"A CFS chain takes at most {MAX_BOXES} boxes; {name} was not added.",
             )
             return
-        if len(chain) < len(boxes):
-            console.print_msg(
-                "WARNING",
-                f"Your CFS boxes are on more than one serial port. {name} joins the chain of "
-                f"{first.name} (box_addr {_box_addr(first)}); for another chain, change serial, "
-                f"box_addr and hub in AFC_{name}.cfg.",
-            )
         if not first.options.get("box_uid"):
             self._ask_first_uid(console, prompter, first)
         text = additional_box_config(name, first, free[0], _next_lane_number(cfg))
@@ -387,8 +367,7 @@ class Cfs(UnitType):
             return None
         lanes = sorted(section_names([unit_file], "AFC_lane"), key=_lane_sort_key)
         lane_text = f" with lanes {lanes[0]} to {lanes[-1]}" if lanes else ""
-        chain = chain_of(box, find_cfs_boxes(ctx.afc_config_dir))
-        others = [b for b in chain if b.name != name]
+        others = [b for b in find_cfs_boxes(ctx.afc_config_dir) if b.name != name]
         first_text = f" as {first_box(others).name}" if others else ""
         # The uid prompt's warning is cleared off the screen, so repeat it here
         missing = [b for b in others if not b.options.get("box_uid")]
