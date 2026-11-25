@@ -13,14 +13,11 @@ from installer.unit_registry.units.cfs import (
     Cfs,
     CfsBox,
     _box_addr,
-    _chain_key,
     _lane_sort_key,
-    _natural_key,
     _next_lane_number,
     _strip_comment,
     additional_box_config,
     find_cfs_boxes,
-    first_box,
     normalize_uid,
 )
 from tests.installer.fakes import PrinterTree, RecordingConsole, ScriptedPrompter
@@ -157,35 +154,6 @@ class TestBoxAddr:
         assert _box_addr(CfsBox("CFS_2", Path("x"), {"box_addr": "two"})) == 0
 
 
-class TestNaturalKey:
-    def test_numbers_compare_as_numbers(self) -> None:
-        names = ["AFC_CFS_10.cfg", "AFC_CFS_2.cfg", "AFC_CFS_1.cfg", "AFC_Box.cfg"]
-        assert sorted(names, key=_natural_key) == [
-            "AFC_Box.cfg", "AFC_CFS_1.cfg", "AFC_CFS_2.cfg", "AFC_CFS_10.cfg"]
-
-
-def box(name: str, file: str, **options: str) -> CfsBox:
-    return CfsBox(name, Path(file), dict(options))
-
-
-class TestFirstBox:
-    def test_lowest_box_addr_wins_over_file_order(self) -> None:
-        boxes = [box("Alpha", "AFC_Alpha.cfg", box_addr="2"),
-                 box("CFS_10", "AFC_CFS_10.cfg", box_addr="3"),
-                 box("Main", "AFC_Main.cfg")]                 # unset box_addr is 1
-        assert first_box(boxes).name == "Main"
-
-    def test_same_address_falls_back_to_natural_file_order(self) -> None:
-        boxes = [box("B10", "AFC_CFS_10.cfg", box_addr="1"),
-                 box("B2", "AFC_CFS_2.cfg", box_addr="1")]
-        assert first_box(boxes).name == "B2"
-
-    def test_an_unreadable_address_goes_last(self) -> None:
-        boxes = [box("Bad", "AFC_A.cfg", box_addr="x"), box("Ok", "AFC_B.cfg", box_addr="4")]
-        assert first_box(boxes).name == "Ok"
-        assert _chain_key(boxes[0])[0] == 5
-
-
 class TestNextLaneNumber:
     def test_after_the_highest_lane(self, printer_tree: PrinterTree) -> None:
         ctx = make_ctx(printer_tree)
@@ -276,20 +244,6 @@ class TestCfsInstallAdditional:
         assert not (ctx.afc_config_dir / "AFC_CFS_5.cfg").exists()
         assert console.messages == [
             ("WARNING", "A CFS chain takes at most 4 boxes; CFS_5 was not added.")]
-
-    def test_the_first_box_is_found_by_box_addr_not_file_name(
-        self, printer_tree: PrinterTree
-    ) -> None:
-        ctx = make_ctx(printer_tree)
-        # AFC_Alpha.cfg and AFC_CFS_10.cfg sort before AFC_CFS_2.cfg by name
-        put(ctx, "AFC_Alpha.cfg", box_section("Alpha", 2, uid=UID_B) + "hub: Other\n")
-        put(ctx, "AFC_CFS_10.cfg", box_section("CFS_10", 3, uid=UID_B) + "hub: Other\n")
-        put(ctx, "AFC_CFS_2.cfg", first_box_file(UID_A).replace("CFS_1", "CFS_2"))
-        prompter = ScriptedPrompter([])
-        unit().install_additional(ctx, RecordingConsole(), prompter, additional("CFS_11"))
-        assert text_of(ctx, "AFC_CFS_11.cfg") == expected_box(
-            "CFS_11", 4, range(5, 9), hub="CFS_2", first="CFS_2")
-        assert prompter.prompts == []
 
     def test_first_box_without_a_uid_is_asked_for_it(self, printer_tree: PrinterTree) -> None:
         ctx = make_ctx(printer_tree)

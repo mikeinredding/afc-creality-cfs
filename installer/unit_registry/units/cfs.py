@@ -97,40 +97,6 @@ def _box_addr(box: CfsBox) -> int:
         return 0
 
 
-def _natural_key(text: str) -> Tuple[Tuple[int, int, str], ...]:
-    """
-    Sort `AFC_CFS_2.cfg` before `AFC_CFS_10.cfg`: digit runs compare as numbers.
-
-    :param text: a file or section name
-    :return Tuple[Tuple[int, int, str], ...]: the sort key
-    """
-    return tuple((0, int(part), "") if part.isdigit() else (1, 0, part)
-                 for part in re.findall(r"\d+|\D+", text))
-
-
-def _chain_key(box: CfsBox) -> Tuple[int, Tuple[Tuple[int, int, str], ...], str]:
-    """
-    Order boxes by box_addr, then by file and section name. An unreadable box_addr
-    goes last.
-
-    :param box: the section
-    :return: the sort key
-    """
-    addr = _box_addr(box)
-    return (addr if addr > 0 else MAX_BOXES + 1, _natural_key(box.path.name), box.name)
-
-
-def first_box(boxes: List[CfsBox]) -> CfsBox:
-    """
-    The chain's first box: the lowest box_addr, not the first file by name (a user may
-    have files such as AFC_CFS_10.cfg or a box with a name of their own).
-
-    :param boxes: the boxes found, at least one
-    :return CfsBox: the box new boxes are added after
-    """
-    return min(boxes, key=_chain_key)
-
-
 def _next_lane_number(cfg_dir: Path) -> int:
     """
     The first lane number after every `[AFC_lane laneN]` already configured.
@@ -264,7 +230,6 @@ class Cfs(UnitType):
             safe_copy(ctx, console, prompter, ctx.afc_path / "templates" / TEMPLATE, unit_file)
             replace_text(unit_file, FIRST_NAME, name)
             return
-        first = first_box(boxes)
         used = {_box_addr(box) for box in boxes}
         free = [addr for addr in range(1, MAX_BOXES + 1) if addr not in used]
         if not free:
@@ -273,6 +238,7 @@ class Cfs(UnitType):
                 f"A CFS chain takes at most {MAX_BOXES} boxes; {name} was not added.",
             )
             return
+        first = boxes[0]
         if not first.options.get("box_uid"):
             self._ask_first_uid(console, prompter, first)
         text = additional_box_config(name, first, free[0], _next_lane_number(cfg))
@@ -368,7 +334,7 @@ class Cfs(UnitType):
         lanes = sorted(section_names([unit_file], "AFC_lane"), key=_lane_sort_key)
         lane_text = f" with lanes {lanes[0]} to {lanes[-1]}" if lanes else ""
         others = [b for b in find_cfs_boxes(ctx.afc_config_dir) if b.name != name]
-        first_text = f" as {first_box(others).name}" if others else ""
+        first_text = f" as {others[0].name}" if others else ""
         # The uid prompt's warning is cleared off the screen, so repeat it here
         missing = [b for b in others if not b.options.get("box_uid")]
         missing_text = "".join(
