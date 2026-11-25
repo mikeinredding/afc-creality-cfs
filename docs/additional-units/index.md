@@ -57,8 +57,6 @@ configuration for the chain instead of copying the template. Choose `A`, then `C
 - the next free lane numbers (`lane5` to `lane8` for the second box), so no renumbering is needed,
 - a `box_uid` placeholder (`000000000000000000000000`).
 
-The first box is the one with the lowest `box_addr` (box 1's file has no `box_addr` line, which means 1).
-
 Every box on a chain needs `box_uid` once there is more than one. AFC can't tell the boxes apart by their position on
 the chain, so the uid is what ties each `[AFC_CFS]` section to its box. Add one box at a time:
 
