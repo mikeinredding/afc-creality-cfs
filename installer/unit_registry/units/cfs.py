@@ -43,6 +43,7 @@ class CfsBox(NamedTuple):
     name: str
     path: Path
     options: Dict[str, str]
+    header: str = ""        # the header line exactly as in the file, for editing it
 
 
 def _strip_comment(value: str) -> str:
@@ -69,10 +70,12 @@ def find_cfs_boxes(cfg_dir: Path) -> List[CfsBox]:
         except OSError:
             continue
         current: Optional[CfsBox] = None
-        for line in (raw.rstrip("\r\n") for raw in doc.lines):
+        for raw in doc.lines:
+            body = raw[:-1] if raw.endswith("\n") else raw   # as set_key_in_section sees it
+            line = body.rstrip("\r")
             match = _SECTION.match(line)
             if match:
-                current = CfsBox(match.group(1), path, {})
+                current = CfsBox(match.group(1), path, {}, body)
                 boxes.append(current)
                 continue
             if _HEADER.match(line):
@@ -227,8 +230,10 @@ class Cfs(UnitType):
         unit_file = cfg / f"AFC_{name}.cfg"
         boxes = find_cfs_boxes(cfg)
         if not boxes:
-            safe_copy(ctx, console, prompter, ctx.afc_path / "templates" / TEMPLATE, unit_file)
-            replace_text(unit_file, FIRST_NAME, name)
+            template = ctx.afc_path / "templates" / TEMPLATE
+            # a file the user chose to keep is left as it is
+            if safe_copy(ctx, console, prompter, template, unit_file) == "copied":
+                replace_text(unit_file, FIRST_NAME, name)
             return
         used = {_box_addr(box) for box in boxes}
         free = [addr for addr in range(1, MAX_BOXES + 1) if addr not in used]
@@ -274,7 +279,10 @@ class Cfs(UnitType):
                 return
             uid = normalize_uid(answer)
             if uid is not None:
-                set_key_in_section(first.path, f"[AFC_CFS {first.name}]", "box_uid", uid)
+                # the header exactly as found (trailing spaces, CRLF line ends), or nothing
+                # matches and the uid isn't written
+                header = first.header or f"[AFC_CFS {first.name}]"
+                set_key_in_section(first.path, header, "box_uid", uid)
                 return
             console.print_msg(
                 "WARNING",

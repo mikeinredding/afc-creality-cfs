@@ -118,20 +118,28 @@ class TestFindCfsBoxes:
         path2 = put(ctx, "AFC_CFS_2.cfg", f"[AFC_CFS CFS_2]\nbox_addr = 2\nbox_uid: {UID_B}\n")
         assert find_cfs_boxes(ctx.afc_config_dir) == [
             CfsBox("CFS_1", path1, {"serial": SERIAL, "box_uid": UID_A, "hub": "CFS_1",
-                                    "extruder": "extruder"}),
-            CfsBox("CFS_2", path2, {"box_addr": "2", "box_uid": UID_B}),
+                                    "extruder": "extruder"}, "[AFC_CFS CFS_1]"),
+            CfsBox("CFS_2", path2, {"box_addr": "2", "box_uid": UID_B}, "[AFC_CFS CFS_2]"),
         ]
+
+    def test_keeps_the_header_line_as_written(self, printer_tree: PrinterTree) -> None:
+        ctx = make_ctx(printer_tree)
+        put(ctx, "AFC_CFS_1.cfg", "[AFC_CFS CFS_1]  \r\nhub: CFS_1\r\n")
+        found = find_cfs_boxes(ctx.afc_config_dir)
+        assert [(b.name, b.header, b.options) for b in found] == [
+            ("CFS_1", "[AFC_CFS CFS_1]  \r", {"hub": "CFS_1"})]
 
     def test_options_of_other_sections_are_ignored(self, printer_tree: PrinterTree) -> None:
         ctx = make_ctx(printer_tree)
         path = put(ctx, "AFC_X.cfg", "serial: /dev/a\n[AFC_CFS CFS_1]\nhub: CFS_1\n"
                                      "[AFC_hub CFS_1]\nswitch_pin: virtual\n")
-        assert find_cfs_boxes(ctx.afc_config_dir) == [CfsBox("CFS_1", path, {"hub": "CFS_1"})]
+        assert find_cfs_boxes(ctx.afc_config_dir) == [
+            CfsBox("CFS_1", path, {"hub": "CFS_1"}, "[AFC_CFS CFS_1]")]
 
     def test_commented_and_blank_lines_are_not_options(self, printer_tree: PrinterTree) -> None:
         ctx = make_ctx(printer_tree)
         path = put(ctx, "AFC_CFS_1.cfg", "[AFC_CFS CFS_1]\n# box_uid: x\n\n#box_addr: 3\n")
-        assert find_cfs_boxes(ctx.afc_config_dir) == [CfsBox("CFS_1", path, {})]
+        assert find_cfs_boxes(ctx.afc_config_dir) == [CfsBox("CFS_1", path, {}, "[AFC_CFS CFS_1]")]
 
     def test_unreadable_files_are_skipped(self, printer_tree: PrinterTree) -> None:
         ctx = make_ctx(printer_tree)
@@ -270,6 +278,14 @@ class TestCfsInstallAdditional:
         assert files(ctx) == ["AFC_Box_A.cfg"]
         assert text_of(ctx, "AFC_Box_A.cfg") == template.replace("CFS_1", "Box_A")
 
+    def test_no_cfs_yet_a_skipped_file_is_not_renamed(self, printer_tree: PrinterTree) -> None:
+        ctx = make_ctx(printer_tree)
+        mine = "[AFC_hub CFS_1]\nswitch_pin: virtual\n"   # mentions CFS_1, but no [AFC_CFS]
+        put(ctx, "AFC_Box_A.cfg", mine)
+        unit().install_additional(ctx, RecordingConsole(), ScriptedPrompter(["s"]),
+                                  additional("Box_A"))
+        assert text_of(ctx, "AFC_Box_A.cfg") == mine
+
     def test_an_existing_file_is_kept_when_skipped(self, printer_tree: PrinterTree) -> None:
         ctx = make_ctx(printer_tree)
         put(ctx, "AFC_CFS_1.cfg", first_box_file(UID_A))
@@ -313,6 +329,18 @@ class TestCfsAskFirstUid:
             "Every box on a CFS chain needs box_uid, and CFS_1 has none yet. Run "
             "AFC_CFS_STATUS UNIT=CFS_1 in the console and copy its box uid.",
         )]
+
+    @pytest.mark.parametrize("header_end", ["   \n", "\r\n", " \r\n"])
+    def test_writes_the_uid_whatever_the_header_line_ends_with(
+        self, printer_tree: PrinterTree, header_end: str
+    ) -> None:
+        ctx = make_ctx(printer_tree)
+        newline = "\r\n" if "\r" in header_end else "\n"
+        text = f"[AFC_CFS CFS_1]{header_end}serial: {SERIAL}{newline}{newline}[AFC_hub CFS_1]"
+        put(ctx, "AFC_CFS_1.cfg", text + newline)
+        first = find_cfs_boxes(ctx.afc_config_dir)[0]
+        unit()._ask_first_uid(RecordingConsole(), ScriptedPrompter([UID_A]), first)
+        assert find_cfs_boxes(ctx.afc_config_dir)[0].options["box_uid"] == UID_A
 
     def test_a_mistyped_uid_is_asked_for_again(self, printer_tree: PrinterTree) -> None:
         ctx = make_ctx(printer_tree)
