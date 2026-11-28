@@ -1619,10 +1619,11 @@ box_uid:
 #    Default: <none>
 #    The box's 12-byte ID, as 24 hex digits. `AFC_CFS_STATUS` shows it for a
 #    box that is already configured; a box that isn't in the config yet is
-#    named in a startup warning instead (see Additional Units). Required when two or more boxes share a chain; Klipper refuses the config
-#    otherwise. Without it the boxes would be addressed in the order they
-#    answer, which can change between power-ups and swap your lanes. A single
-#    box may leave it unset.
+#    named in a startup warning instead (see Additional Units). Required when
+#    two or more boxes share a chain; Klipper refuses the config otherwise.
+#    Without it the boxes would be addressed in the order they answer, which
+#    can change between power-ups and swap your lanes. A single box may leave
+#    it unset.
 cutter_sensor_pin:
 #    Default: <none>
 #    Your toolhead cutter's switch (the CFS toolhead kit has one), if it is
